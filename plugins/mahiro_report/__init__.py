@@ -1,6 +1,8 @@
 from datetime import datetime
 from pathlib import Path
 import shutil
+import asyncio
+from asyncio import timeout
 
 import nonebot
 from nonebot.adapters import Bot
@@ -104,28 +106,44 @@ async def check(bot: Bot, group_id: str) -> bool:
     return not await CommonUtils.task_is_block(bot, "mahiro_report", group_id)
 
 
+# 添加信号量控制
+_report_semaphore = asyncio.Semaphore(5)
+
 @scheduler.scheduled_job(
     "cron",
     hour=0,
     minute=1,
 )
-async def _():
-    for _ in range(3):
-        try:
-            await Report.get_report_image()
-            logger.info("自动生成日报成功...")
-            break
-        except TimeoutError:
-            logger.warning("自动生成日报失败...")
-
+async def generate_daily_report_task():
+    try:
+        async with _report_semaphore:
+            async with timeout(30):  # 30秒超时控制
+                for _ in range(3):
+                    try:
+                        await Report.get_report_image()
+                        logger.info("自动生成日报成功...")
+                        break
+                    except TimeoutError:
+                        logger.warning("自动生成日报失败...")
+    except asyncio.TimeoutError:
+        logger.error("生成日报任务超时...")
+    except Exception as e:
+        logger.error("生成日报任务失败", e=e)
 
 @scheduler.scheduled_job(
     "cron",
     hour=9,
     minute=1,
 )
-async def _():
-    file = await Report.get_report_image()
-    message = MessageUtils.build_message(file)
-    await broadcast_group(message, log_cmd="真寻日报", check_func=check)
-    logger.info("每日真寻日报发送...")
+async def broadcast_daily_report_task():
+    try:
+        async with _report_semaphore:
+            async with timeout(30):  # 30秒超时控制
+                file = await Report.get_report_image()
+                message = MessageUtils.build_message(file)
+                await broadcast_group(message, log_cmd="真寻日报", check_func=check)
+                logger.info("每日真寻日报发送...")
+    except asyncio.TimeoutError:
+        logger.error("发送日报任务超时...")
+    except Exception as e:
+        logger.error("发送日报任务失败", e=e)

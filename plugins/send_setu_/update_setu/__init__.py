@@ -1,3 +1,11 @@
+'''
+Author: xx
+Date: 2025-03-22 15:36:23
+LastEditors: Do not edit
+LastEditTime: 2025-03-23 00:58:32
+Description: 
+FilePath: \zhenxun\zhenxun_bot\zhenxun\plugins\send_setu_\update_setu\__init__.py
+'''
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
@@ -12,6 +20,9 @@ from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
 
 from .data_source import update_setu_img
+
+import asyncio
+from asyncio import timeout
 
 __plugin_meta__ = PluginMetadata(
     name="更新色图",
@@ -33,6 +44,8 @@ _matcher = on_alconna(
     Alconna("更新色图"), rule=to_me(), permission=SUPERUSER, priority=1, block=True
 )
 
+# 添加信号量控制
+_update_setu_semaphore = asyncio.Semaphore(5)
 
 @_matcher.handle()
 async def _(session: EventSession, arparma: Arparma):
@@ -52,8 +65,15 @@ async def _(session: EventSession, arparma: Arparma):
     hour=4,
     minute=30,
 )
-async def _():
-    if Config.get_config("send_setu", "DOWNLOAD_SETU"):
-        result = await update_setu_img()
-        if result:
-            logger.info(result, "自动更新色图")
+async def update_setu_images_task():
+    try:
+        async with _update_setu_semaphore:
+            async with timeout(30):  # 30秒超时控制
+                if Config.get_config("send_setu", "DOWNLOAD_SETU"):
+                    result = await update_setu_img()
+                    if result:
+                        logger.info(result, "自动更新色图")
+    except asyncio.TimeoutError:
+        logger.error("更新色图任务超时...")
+    except Exception as e:
+        logger.error("更新色图任务失败", e=e)

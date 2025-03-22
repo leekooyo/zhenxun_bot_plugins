@@ -23,6 +23,9 @@ from zhenxun.utils.message import MessageUtils
 from .._config import InfoManage
 from .data_source import PixManage
 
+import asyncio
+from asyncio import timeout
+
 __plugin_meta__ = PluginMetadata(
     name="PIX修改",
     description="这里是PIX图库！",
@@ -137,10 +140,20 @@ async def _(bot: Bot, event: Event, arparma: Arparma, n: int, session: Uninfo):
     )
 
 
+# 添加信号量控制
+_remove_data_semaphore = asyncio.Semaphore(5)
+
 @scheduler.scheduled_job(
     "interval",
     minutes=30,
 )
-async def _():
-    InfoManage.remove()
-    logger.debug("自动移除过期图片数据...")
+async def remove_expired_images_task():
+    try:
+        async with _remove_data_semaphore:
+            async with timeout(30):  # 30秒超时控制
+                InfoManage.remove()
+                logger.debug("自动移除过期图片数据...")
+    except asyncio.TimeoutError:
+        logger.error("移除过期图片数据超时...")
+    except Exception as e:
+        logger.error("移除过期图片数据失败", e=e)
