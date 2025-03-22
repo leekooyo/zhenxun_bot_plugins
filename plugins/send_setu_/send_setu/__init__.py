@@ -221,7 +221,7 @@ async def _(
         if isinstance(result, str):
             await MessageUtils.build_message(result).finish(reply_to=True)
         await result[0].finish()
-    result_list = await SetuManage.get_setu(tags=_tags, num=_num, is_r18=is_r18)
+    result_list = await SetuManage.get_setu(tags=_tags, num=_num, is_r18=False)
     if isinstance(result_list, str):
         await MessageUtils.build_message(result_list).finish(reply_to=True)
     max_once_num2forward = base_config.get("MAX_ONCE_NUM2FORWARD")
