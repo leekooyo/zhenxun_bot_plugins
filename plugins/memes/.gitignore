@@ -1,0 +1,7 @@
+*__pycache__/
+dist/
+.idea/
+.vscode/
+node_modules/
+bot.py
+.env
