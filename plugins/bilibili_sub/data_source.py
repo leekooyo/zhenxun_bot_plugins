@@ -1,11 +1,12 @@
 import asyncio
+import random
+from asyncio.exceptions import TimeoutError
+from datetime import datetime, timedelta
+
 import httpx
 import nonebot
-import random
-from typing import List
-from asyncio.exceptions import TimeoutError
 from bilireq.exceptions import ResponseCodeError
-from datetime import datetime, timedelta
+
 from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import IMAGE_PATH
 from zhenxun.services.log import logger
@@ -94,10 +95,12 @@ async def add_live_sub(live_id: int, sub_user: str) -> str:
             live_status=live_status,
         ):
             await _get_up_status(room_id)
-            uname = (await BilibiliSub.get_or_none(sub_id=room_id)).uname
+            sub = await BilibiliSub.get_or_none(sub_id=room_id)
+            if not sub:
+                return "添加订阅失败..."
             return (
                 "订阅成功！🎉\n"
-                f"主播名称：{uname}\n"
+                f"主播名称：{sub.uname}\n"
                 f"直播标题：{title}\n"
                 f"直播间ID：{room_id}\n"
                 f"用户UID：{uid}"
@@ -197,7 +200,7 @@ async def delete_sub(sub_id: str, sub_user: str) -> str:
     """
     删除订阅
     :param sub_id: 订阅 id
-    :param sub_user: 订阅用户 id # 7384933:private or 7384933:2342344(group)
+    :param sub_user: 订阅用户 id
     """
     if await BilibiliSub.delete_bilibili_sub(int(sub_id), sub_user):
         return f"已成功取消订阅：{sub_id}"
@@ -213,9 +216,9 @@ async def get_media_id(keyword: str) -> dict:
     from .auth import AuthManager
 
     params = {"keyword": keyword}
+    _season_data = {}
     for _ in range(3):
         try:
-            _season_data = {}
             response = await AsyncHttpx.get(
                 SEARCH_URL, params=params, cookies=AuthManager.get_cookies(), timeout=5
             )
@@ -233,10 +236,10 @@ async def get_media_id(keyword: str) -> dict:
                                     .replace("</em>", ""),
                                 }
                                 idx += 1
-                            return _season_data
+                            break
         except TimeoutError:
-            pass
-        return {}
+            continue
+    return _season_data
 
 
 async def get_sub_status(id_: int, sub_type: str) -> list | None:
@@ -270,6 +273,10 @@ async def _get_live_status(id_: int) -> list:
     cover = live_info["user_cover"]
     sub = await BilibiliSub.get_or_none(sub_id=id_)
     msg_list = []
+
+    if not sub:
+        return msg_list
+
     if sub.live_status != live_status:
         await BilibiliSub.sub_handle(id_, live_status=live_status)
         image = None
@@ -278,14 +285,14 @@ async def _get_live_status(id_: int) -> list:
             image = BuildImage(background=image_bytes)
         except Exception as e:
             logger.error(f"图片构造失败，错误信息：{e}")
-    if sub.live_status in [0, 2] and live_status == 1 and image:
-        msg_list = [
-            image,
-            "\n",
-            f"{sub.uname} 开播啦！🎉\n",
-            f"标题：{title}\n",
-            f"直播间链接：https://live.bilibili.com/{room_id}",
-        ]
+        if sub.live_status in [0, 2] and live_status == 1 and image:
+            msg_list = [
+                image,
+                "\n",
+                f"{sub.uname} 开播啦！🎉\n",
+                f"标题：{title}\n",
+                f"直播间链接：https://live.bilibili.com/{room_id}",
+            ]
     return msg_list
 
 
@@ -303,106 +310,128 @@ async def fetch_image_with_retry(url, retries=3, delay=2):
 
 
 async def _get_up_status(id_: int) -> list:
-    # 获取当前时间戳
-    current_time = datetime.now()
-
+    # 获取基础信息
     _user = await BilibiliSub.get_or_none(sub_id=id_)
-    user_info = await get_user_card(_user.uid)
-    uname = user_info["name"]
-
-    # 获取用户视频信息
-    video_info = await get_videos(_user.uid)
-    if not video_info.get("data"):
-        await handle_video_info_error(video_info)
+    if not _user:
         return []
-    video_info = video_info["data"]
 
-    # 初始化消息列表和时间阈值（30分钟）
-    msg_list = []
+    # 获取用户信息和视频信息
+    try:
+        user_info = await get_user_card(_user.uid)
+        video_info = await get_videos(_user.uid)
+        if not video_info.get("data"):
+            await handle_video_info_error(video_info)
+            return []
+    except ResponseCodeError as e:
+        logger.error(f"获取用户信息失败: {e}")
+        return []
+
+    # 初始化变量
+    current_time = datetime.now()
     time_threshold = current_time - timedelta(minutes=30)
+    msg_list = []
     dividing_line = "\n-------------\n"
 
-    # 处理用户名更新
-    if _user.uname != uname:
-        await BilibiliSub.sub_handle(id_, uname=uname)
+    # 更新用户名
+    if _user.uname != user_info["name"]:
+        await BilibiliSub.sub_handle(id_, uname=user_info["name"])
 
-    # 处理动态信息
+    # 处理动态更新
     dynamic_img = None
+    dynamic_upload_time = 0
+    link = ""
     try:
         dynamic_img, dynamic_upload_time, link = await get_user_dynamic(
             _user.uid, _user
         )
-    except ResponseCodeError as msg:
-        logger.error(f"Id：{id_} 动态获取失败...{msg}")
+    except Exception as e:
+        logger.error(f"获取用户动态失败: {e}")
+    msg_list.extend(
+        await _handle_dynamic_update(
+            _user, time_threshold, dynamic_img, dynamic_upload_time, link
+        )
+    )
 
-    # 动态时效性检查
-    if dynamic_img and _user.dynamic_upload_time < dynamic_upload_time:
-        dynamic_time = datetime.fromtimestamp(dynamic_upload_time)
-        logger.info(link)
-        if dynamic_time > time_threshold:  # 30分钟内动态
-            # 检查动态是否含广告
-            if base_config.get("SLEEP_END_TIME"):
-                if await check_page_elements(link):
-                    await BilibiliSub.sub_handle(
-                        id_, dynamic_upload_time=dynamic_upload_time
-                    )
-                    return msg_list  # 停止执行
-            
-            await BilibiliSub.sub_handle(id_, dynamic_upload_time=dynamic_upload_time)
-            msg_list = [f"{uname} 发布了动态！📢\n", dynamic_img, f"\n查看详情：{link}"]
-        else:  # 超过30分钟仍更新时间戳避免重复处理
-            await BilibiliSub.sub_handle(id_, dynamic_upload_time=dynamic_upload_time)
-
-    # 处理视频信息
-    video = None
-    if video_info["list"].get("vlist"):
-        video = video_info["list"]["vlist"][0]
-        latest_video_created = video.get("created", "")
-
-        # 视频时效性检查
-        if (
-            latest_video_created
-            and _user.latest_video_created < latest_video_created
-            and datetime.fromtimestamp(latest_video_created) > time_threshold
-        ):
-            # 检查视频链接是否被拦截
-            video_url = f"https://www.bilibili.com/video/{video['bvid']}"
-
-            # 带重试的封面获取
-            image = None
-            try:
-                image_bytes = await fetch_image_with_retry(
-                    video["pic"], retries=3, delay=2
-                )
-                image = BuildImage(background=image_bytes)
-            except Exception as e:
-                logger.error(f"封面获取失败（已重试3次）: {e}")
-
-            # 构建消息内容
-            video_msg = [
-                f"{uname} 投稿了新视频啦！🎉\n",
-                f"标题：{video['title']}\n",
-                f"Bvid：{video['bvid']}\n",
-                f"链接：{video_url}",
-            ]
-
-            # 合并动态和视频消息
-            if msg_list and image:
-                msg_list += [dividing_line, image] + video_msg
-            elif image:  # 仅有视频更新
-                msg_list = [image] + video_msg
-            elif msg_list:  # 有动态但无封面
-                msg_list += [dividing_line] + video_msg
-            else:  # 仅有无封面视频
-                msg_list = ["⚠️ 封面获取失败，但仍需通知："] + video_msg
-
-            # 强制更新视频时间戳
-            await BilibiliSub.sub_handle(id_, latest_video_created=latest_video_created)
-
-        elif latest_video_created > _user.latest_video_created:  # 超时视频仍更新时间戳
-            await BilibiliSub.sub_handle(id_, latest_video_created=latest_video_created)
+    # 处理视频更新
+    if video_info["data"]["list"].get("vlist"):
+        video = video_info["data"]["list"]["vlist"][0]
+        msg_list.extend(
+            await _handle_video_update(
+                _user, video, time_threshold, msg_list, dividing_line
+            )
+        )
 
     return msg_list
+
+
+async def _handle_dynamic_update(user, time_threshold, img, upload_time, link) -> list:
+    """处理动态更新"""
+    if not (img and user.dynamic_upload_time < upload_time):
+        return []
+
+    dynamic_time = datetime.fromtimestamp(upload_time)
+    if dynamic_time <= time_threshold:
+        await BilibiliSub.sub_handle(user.sub_id, dynamic_upload_time=upload_time)
+        return []
+
+    if base_config.get("ENABLE_AD_FILTER") and await check_page_elements(link):
+        await BilibiliSub.sub_handle(user.sub_id, dynamic_upload_time=upload_time)
+        return []
+
+    await BilibiliSub.sub_handle(user.sub_id, dynamic_upload_time=upload_time)
+    return [f"{user.uname} 发布了动态！📢\n", img, f"\n查看详情：{link}"]
+
+
+async def _handle_video_update(
+    user, video, time_threshold, existing_msg, divider
+) -> list:
+    """处理视频更新"""
+    latest_created = video.get("created", "")
+    if not (
+        latest_created
+        and user.latest_video_created < latest_created
+        and datetime.fromtimestamp(latest_created) > time_threshold
+    ):
+        if latest_created > user.latest_video_created:
+            await BilibiliSub.sub_handle(
+                user.sub_id, latest_video_created=latest_created
+            )
+        return []
+
+    # 构建视频消息
+    video_url = f"https://www.bilibili.com/video/{video['bvid']}"
+    video_msg = [
+        f"{user.uname} 投稿了新视频啦！🎉\n",
+        f"标题：{video['title']}\n",
+        f"Bvid：{video['bvid']}\n",
+        f"链接：{video_url}",
+    ]
+
+    # 获取视频封面
+    image = await _get_video_cover(video["pic"])
+
+    # 更新时间戳
+    await BilibiliSub.sub_handle(user.sub_id, latest_video_created=latest_created)
+
+    # 根据不同情况返回消息
+    if existing_msg and image:
+        return [divider, image, *video_msg]
+    elif image:
+        return [image, *video_msg]
+    elif existing_msg:
+        return [divider, *video_msg]
+    else:
+        return ["⚠️ 封面获取失败，但仍需通知：", *video_msg]
+
+
+async def _get_video_cover(pic_url: str) -> BuildImage | None:
+    """获取视频封面"""
+    try:
+        image_bytes = await fetch_image_with_retry(pic_url, retries=3, delay=2)
+        return BuildImage(background=image_bytes)
+    except Exception as e:
+        logger.error(f"封面获取失败（已重试3次）: {e}")
+        return None
 
 
 async def _get_season_status(id_) -> list:
@@ -413,10 +442,13 @@ async def _get_season_status(id_) -> list:
     """bilibili_api.bangumi库中get_meta改为bilireq.bangumi库的get_meta方法"""
     season_info = await get_meta(id_)
     title = season_info["media"]["title"]
-    _idx = (await BilibiliSub.get_or_none(sub_id=id_)).season_current_episode
+    sub = await BilibiliSub.get_or_none(sub_id=id_)
+    if not sub:
+        return []
+
     new_ep = season_info["media"]["new_ep"]["index"]
     msg_list = []
-    if new_ep != _idx:
+    if new_ep != sub.season_current_episode:
         image = None
         try:
             image_bytes = await fetch_image_bytes(season_info["media"]["cover"])
@@ -425,7 +457,9 @@ async def _get_season_status(id_) -> list:
             logger.error(f"图片构造失败，错误信息：{e}")
         if image:
             await BilibiliSub.sub_handle(
-                id_, season_current_episode=new_ep, season_update_time=datetime.now()
+                id_,
+                season_current_episode=new_ep,
+                season_update_time=datetime.now(),
             )
             msg_list = [
                 image,
@@ -447,28 +481,41 @@ async def get_user_dynamic(
     """
     try:
         dynamic_info = await get_user_dynamics(uid)
-    except Exception:
+        if not dynamic_info or not dynamic_info.get("cards"):
+            return None, 0, ""
+
+        # 提取动态信息
+        dynamic_upload_time = dynamic_info["cards"][0]["desc"]["timestamp"]
+        dynamic_id = dynamic_info["cards"][0]["desc"]["dynamic_id"]
+
+        # 检查动态是否为新动态
+        if local_user.dynamic_upload_time >= dynamic_upload_time:
+            return None, 0, ""
+
+        # 获取动态截图
+        image = await get_dynamic_screenshot(dynamic_id)
+        return image, dynamic_upload_time, f"https://t.bilibili.com/{dynamic_id}"
+
+    except Exception as e:
+        logger.error(f"获取用户动态时出错：{e}")
         return None, 0, ""
-    if dynamic_info:
-        if dynamic_info.get("cards"):
-            dynamic_upload_time = dynamic_info["cards"][0]["desc"]["timestamp"]
-            dynamic_id = dynamic_info["cards"][0]["desc"]["dynamic_id"]
-            if local_user.dynamic_upload_time < dynamic_upload_time:
-                image = await get_dynamic_screenshot(dynamic_id)
-                return (
-                    image,
-                    dynamic_upload_time,
-                    f"https://t.bilibili.com/{dynamic_id}",
-                )
-    return None, 0, ""
 
 
 class SubManager:
     def __init__(self):
+        self.lock = asyncio.Lock()
+        self.current_index = -1
         self.live_data = []
         self.up_data = []
         self.season_data = []
-        self.current_index = -1
+
+    # 在sub_manager中增加空值处理
+    async def batch_get_subs(self, limit=100):
+        try:
+            return await BilibiliSub.all().limit(limit)
+        except Exception as e:
+            logger.error(f"批量获取订阅失败: {e}")
+            return []
 
     async def reload_sub_data(self):
         """
@@ -487,42 +534,27 @@ class SubManager:
         随机获取一条数据，保证所有 data 都轮询一次后再重载
         :return: Optional[BilibiliSub]
         """
-        sub = None
-
-        # 计算所有数据的总量，确保所有数据轮询完毕后再考虑重载
+        # 检查数据是否为空并尝试重载
         total_data = sum(
             [len(self.live_data), len(self.up_data), len(self.season_data)]
         )
-
-        # 如果所有列表都为空，重新加载一次数据以保证数据库非空
         if total_data == 0:
             await self.reload_sub_data()
             total_data = sum(
                 [len(self.live_data), len(self.up_data), len(self.season_data)]
             )
             if total_data == 0:
+                return None
+
+        # 创建数据源列表并随机打乱顺序
+        data_sources = [self.live_data, self.up_data, self.season_data]
+        random.shuffle(data_sources)
+
+        # 遍历随机化后的数据源
+        for data_list in data_sources:
+            if data_list:
+                sub = random.choice(data_list)
+                data_list.remove(sub)
                 return sub
 
-        attempts = 0
-
-        # 开始轮询，直到所有数据都被遍历一次
-        while attempts < total_data:
-            self.current_index = (self.current_index + 1) % 3  # 轮询 0, 1, 2 之间
-
-            # 根据 current_index 从相应的列表中随机取出数据
-            if self.current_index == 0 and self.live_data:
-                sub = random.choice(self.live_data)
-                self.live_data.remove(sub)
-                attempts += 1  # 成功从 live_data 获取数据
-            elif self.current_index == 1 and self.up_data:
-                sub = random.choice(self.up_data)
-                self.up_data.remove(sub)
-                attempts += 1  # 成功从 up_data 获取数据
-            elif self.current_index == 2 and self.season_data:
-                sub = random.choice(self.season_data)
-                self.season_data.remove(sub)
-                attempts += 1  # 成功从 season_data 获取数据
-
-            # 如果成功找到数据，立即返回
-            if sub:
-                return sub
+        return None

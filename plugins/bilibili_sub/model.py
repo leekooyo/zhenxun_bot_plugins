@@ -1,9 +1,7 @@
-from datetime import datetime
-
 from tortoise import fields
 
-from zhenxun.services.log import logger
 from zhenxun.services.db_context import Model
+from zhenxun.services.log import logger
 
 
 class BilibiliSub(Model):
@@ -36,7 +34,7 @@ class BilibiliSub(Model):
     season_update_time = fields.DateField(null=True)
     """番剧更新日期"""
 
-    class Meta:
+    class Meta(Model.Meta):
         table = "bilibili_sub"
         table_description = "B站订阅数据表"
         unique_together = ("sub_id", "sub_type")
@@ -47,17 +45,7 @@ class BilibiliSub(Model):
         sub_id: int,
         sub_type: str | None = None,
         sub_user: str = "",
-        *,
-        live_short_id: int | None = None,
-        live_status: int | None = None,
-        dynamic_upload_time: int = 0,
-        uid: int | None = None,
-        uname: str | None = None,
-        latest_video_created: int | None = None,
-        season_name: str | None = None,
-        season_id: int | None = None,
-        season_current_episode: str | None = None,
-        season_update_time: datetime | None = None,
+        **kwargs,
     ) -> bool:
         """
         说明:
@@ -66,66 +54,79 @@ class BilibiliSub(Model):
             :param sub_id: 订阅名称，房间号，番剧号等
             :param sub_type: 订阅类型
             :param sub_user: 订阅此条目的用户
-            :param live_short_id: 直接短 id
-            :param live_status: 主播开播状态
-            :param dynamic_upload_time: 主播/UP最新动态时间
-            :param uid: 主播/UP uid
-            :param uname: 用户名称
-            :param latest_video_created: 最新视频上传时间
-            :param season_name: 番剧名称
-            :param season_id: 番剧 season_id
-            :param season_current_episode: 番剧最新集数
-            :param season_update_time: 番剧更新时间
+            :param kwargs: 其他订阅相关参数
         """
-        # try:
-        data = {
-            "sub_type": sub_type,
-            "sub_user": sub_user,
-            "live_short_id": live_short_id,
-            "live_status": live_status,
-            "dynamic_upload_time": dynamic_upload_time,
-            "uid": uid,
-            "uname": uname,
-            "latest_video_created": latest_video_created,
-            "season_name": season_name,
-            "season_id": season_id,
-            "season_current_episode": season_current_episode,
-            "season_update_time": season_update_time,
-        }
-        if sub_user:
-            sub_user = sub_user if sub_user[-1] == "," else f"{sub_user},"
-        sub = None
+        try:
+            # 处理订阅用户格式
+            formatted_sub_user = (
+                f"{sub_user}," if sub_user and not sub_user.endswith(",") else sub_user
+            )
+
+            # 获取现有订阅
+            existing_sub = await cls._get_existing_sub(sub_id, sub_type)
+
+            # 准备更新数据
+            update_data = cls._prepare_update_data(
+                existing_sub=existing_sub,
+                sub_type=sub_type,
+                sub_user=formatted_sub_user,
+                **kwargs,
+            )
+
+            # 创建或更新订阅
+            if not existing_sub:
+                await cls.create(
+                    sub_id=sub_id, sub_type=sub_type, sub_users=formatted_sub_user
+                )
+
+            await cls.update_or_create(sub_id=sub_id, defaults=update_data)
+            return True
+
+        except Exception as e:
+            logger.error(f"添加订阅失败: {type(e)}: {e}")
+            return False
+
+    @classmethod
+    async def _get_existing_sub(
+        cls, sub_id: int, sub_type: str | None
+    ) -> "BilibiliSub | None":
+        """获取现有订阅"""
         if sub_type:
-            sub = await cls.get_or_none(sub_id=sub_id, sub_type=sub_type)
-        else:
-            sub = await cls.get_or_none(sub_id=sub_id)
-        if sub:
-            sub_users = sub.sub_users + sub_user
-            data["sub_type"] = sub_type or sub.sub_type
-            data["sub_users"] = sub_users
-            data["live_short_id"] = live_short_id or sub.live_short_id
-            data["live_status"] = (
-                live_status if live_status is not None else sub.live_status
-            )
-            data["dynamic_upload_time"] = dynamic_upload_time or sub.dynamic_upload_time
-            data["uid"] = uid or sub.uid
-            data["uname"] = uname or sub.uname
-            data["latest_video_created"] = (
-                latest_video_created or sub.latest_video_created
-            )
-            data["season_name"] = season_name or sub.season_name
-            data["season_id"] = season_id or sub.season_id
-            data["season_current_episode"] = (
-                season_current_episode or sub.season_current_episode
-            )
-            data["season_update_time"] = season_update_time or sub.season_update_time
-        else:
-            await cls.create(sub_id=sub_id, sub_type=sub_type, sub_users=sub_user)
-        await cls.update_or_create(sub_id=sub_id, defaults=data)
-        return True
-        # except Exception as e:
-        #     logger.info(f"bilibili_sub 添加订阅错误 {type(e)}: {e}")
-        # return False
+            return await cls.get_or_none(sub_id=sub_id, sub_type=sub_type)
+        return await cls.get_or_none(sub_id=sub_id)
+
+    @classmethod
+    def _prepare_update_data(
+        cls,
+        existing_sub: "BilibiliSub | None",
+        sub_type: str | None,
+        sub_user: str,
+        **kwargs,
+    ) -> dict:
+        """准备更新数据"""
+        if not existing_sub:
+            return {"sub_type": sub_type, "sub_users": sub_user, **kwargs}
+
+        return {
+            "sub_type": sub_type or existing_sub.sub_type,
+            "sub_users": existing_sub.sub_users + sub_user,
+            "live_short_id": kwargs.get("live_short_id") or existing_sub.live_short_id,
+            "live_status": kwargs.get("live_status")
+            if kwargs.get("live_status") is not None
+            else existing_sub.live_status,
+            "dynamic_upload_time": kwargs.get("dynamic_upload_time")
+            or existing_sub.dynamic_upload_time,
+            "uid": kwargs.get("uid") or existing_sub.uid,
+            "uname": kwargs.get("uname") or existing_sub.uname,
+            "latest_video_created": kwargs.get("latest_video_created")
+            or existing_sub.latest_video_created,
+            "season_name": kwargs.get("season_name") or existing_sub.season_name,
+            "season_id": kwargs.get("season_id") or existing_sub.season_id,
+            "season_current_episode": kwargs.get("season_current_episode")
+            or existing_sub.season_current_episode,
+            "season_update_time": kwargs.get("season_update_time")
+            or existing_sub.season_update_time,
+        }
 
     @classmethod
     async def delete_bilibili_sub(
@@ -133,30 +134,40 @@ class BilibiliSub(Model):
     ) -> bool:
         """
         说明:
-            删除订阅
+            删除指定用户的订阅
         参数:
             :param sub_id: 订阅名称
-            :param sub_user: 删除此条目的用户
+            :param sub_user: 要删除的用户
+            :param sub_type: 订阅类型
         """
         try:
+            # 按 ID 和类型查找订阅
             if sub_type:
-                sub = await cls.filter(
-                    sub_id=sub_id, sub_type=sub_type, sub_users__contains=sub_user
-                ).first()
+                sub = await cls.filter(sub_id=sub_id, sub_type=sub_type).first()
             else:
-                sub = await cls.filter(
-                    sub_id=sub_id, sub_users__contains=sub_user
-                ).first()
+                sub = await cls.filter(sub_id=sub_id).first()
+
             if not sub:
                 return False
-            sub.sub_users = sub.sub_users.replace(f"{sub_user},", "")
-            if sub.sub_users.strip():
-                await sub.save(update_fields=["sub_users"])
-            else:
+
+            # 解析现有的订阅用户列表
+            sub_users_list = sub.sub_users.split(",") if sub.sub_users else []
+            # 过滤掉要删除的用户
+            new_sub_users = [
+                user for user in sub_users_list 
+                if user and sub_user not in user
+            ]
+
+            if not new_sub_users:
+                # 如果没有其他订阅用户了，删除整个记录
                 await sub.delete()
+            else:
+                # 更新订阅用户列表
+                sub.sub_users = ",".join(new_sub_users) + ","
+                await sub.save()
             return True
         except Exception as e:
-            logger.info(f"bilibili_sub 删除订阅错误 {type(e)}: {e}")
+            logger.error(f"bilibili_sub 删除订阅错误 {type(e)}: {e}")
         return False
 
     @classmethod
@@ -183,6 +194,8 @@ class BilibiliSub(Model):
     @classmethod
     async def _run_script(cls):
         return [
-            "ALTER TABLE bilibili_sub ALTER COLUMN season_update_time TYPE timestamp with time zone USING season_update_time::timestamp with time zone;",
-            "ALTER TABLE bilibili_sub ALTER COLUMN sub_id TYPE character varying(255);",  # 添加修改sub_id为char的SQL脚本
+            "ALTER TABLE bilibili_sub "
+            "ALTER COLUMN season_update_time TYPE timestamp with time zone "
+            "USING season_update_time::timestamp with time zone;",
+            "ALTER TABLE bilibili_sub ALTER COLUMN sub_id TYPE character varying(255);",
         ]

@@ -1,8 +1,10 @@
 import asyncio
 import time
-import nonebot
+import traceback
 from datetime import datetime
 from io import BytesIO
+
+import nonebot
 from arclet.alconna.typing import CommandMeta
 from bilireq.login import Login
 from nonebot.adapters.onebot.v11 import Bot
@@ -16,6 +18,7 @@ from nonebot.typing import T_State
 from nonebot_plugin_alconna import Alconna, Args, UniMessage, on_alconna
 from nonebot_plugin_apscheduler import scheduler
 from nonebot_plugin_session import EventSession
+
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import PluginExtraData, RegisterConfig
 from zhenxun.models.group_console import GroupConsole
@@ -31,7 +34,6 @@ from .data_source import (
     add_live_sub,
     add_season_sub,
     add_up_sub,
-    delete_sub,  # noqa: F401
     get_media_id,
     get_sub_status,
 )
@@ -50,7 +52,7 @@ __plugin_meta__ = PluginMetadata(
                 添加订阅 ['主播'/'UP'/'番剧'] [id/链接/番名]
                 删除订阅 ['主播'/'UP'/'id'] [id]
                 查看订阅
-            示例：   
+            示例：
                 添加订阅主播 2345344 <-(直播房间id)
                 添加订阅UP 2355543 <-(个人主页id)
                 添加订阅番剧 史莱姆 <-(支持模糊搜索)
@@ -59,7 +61,7 @@ __plugin_meta__ = PluginMetadata(
         """.strip(),
     extra=PluginExtraData(
         author="HibiKier",
-        version="0.5",
+        version="0.4",
         superuser_help="""
     登录b站获取cookie防止风控：
             bil_check/检测b站
@@ -135,9 +137,9 @@ __plugin_meta__ = PluginMetadata(
 Config.add_plugin_config(
     "bilibili_sub",
     "GROUP_BILIBILI_SUB_LEVEL",
-    5,
+    0,
     help="群内bilibili订阅需要管理的权限",
-    default_value=5,
+    default_value=0,
     type=int,
 )
 
@@ -148,7 +150,7 @@ add_sub = on_alconna(
         meta=CommandMeta(compact=True),
     ),
     aliases={"d", "添加订阅"},
-    priority=5,
+    priority=0,
     block=True,
 )
 del_sub = on_alconna(
@@ -158,7 +160,7 @@ del_sub = on_alconna(
         meta=CommandMeta(compact=True),
     ),
     aliases={"td", "取消订阅"},
-    priority=5,
+    priority=0,
     block=True,
 )
 show_sub_info = on_alconna("查看订阅", priority=5, block=True)
@@ -167,21 +169,21 @@ blive_check = on_alconna(
     Alconna("bil_check"),
     aliases={"检测b站", "检测b站登录", "b站登录检测"},
     permission=SUPERUSER,
-    priority=5,
+    priority=0,
     block=True,
 )
 blive_login = on_alconna(
     Alconna("bil_login"),
     aliases={"登录b站", "b站登录"},
     permission=SUPERUSER,
-    priority=5,
+    priority=0,
     block=True,
 )
 blive_logout = on_alconna(
     Alconna("bil_logout", Args["uid", int]),
     aliases={"退出b站", "退出b站登录", "b站登录退出"},
     permission=SUPERUSER,
-    priority=5,
+    priority=0,
     block=True,
 )
 
@@ -194,6 +196,7 @@ sub_manager: SubManager | None = None
 async def _():
     global sub_manager
     sub_manager = SubManager()
+    await sub_manager.reload_sub_data()  # 确保数据被加载
 
 
 @add_sub.handle()
@@ -218,7 +221,7 @@ async def _(session: EventSession, state: T_State, sub_type: str, sub_msg: str):
             if len(state["season_data"]) == 0:
                 await MessageUtils.build_message(f"未找到番剧：{sub_msg}").finish()
             for i, x in enumerate(state["season_data"]):
-                rst += f'{i + 1}.{state["season_data"][x]["title"]}\n----------\n'
+                rst += f"{i + 1}.{state['season_data'][x]['title']}\n----------\n"
             await MessageUtils.build_message("\n".join(rst.split("\n")[:-1])).send()
         else:
             await MessageUtils.build_message("Id 必须为全数字！").finish()
@@ -240,14 +243,16 @@ async def _(
         season_data = state["season_data"]
         if not id_.isdigit() or int(id_) < 1 or int(id_) > len(season_data):
             await add_sub.reject_arg("id", "Id必须为数字且在范围内！请重新输入...")
-        id_ = season_data[int(id_) - 1]["media_id"]
-    id_ = int(id_)
+        sub_id = int(season_data[int(id_) - 1]["media_id"])
+    else:
+        sub_id = int(id_)
+
     if sub_type in ["主播", "直播"]:
-        await MessageUtils.build_message(await add_live_sub(id_, sub_user)).send()
+        await MessageUtils.build_message(await add_live_sub(sub_id, sub_user)).send()
     elif sub_type.lower() in ["up", "用户"]:
-        await MessageUtils.build_message(await add_up_sub(id_, sub_user)).send()
+        await MessageUtils.build_message(await add_up_sub(sub_id, sub_user)).send()
     elif sub_type in ["season", "动漫", "番剧"]:
-        await MessageUtils.build_message(await add_season_sub(id_, sub_user)).send()
+        await MessageUtils.build_message(await add_season_sub(sub_id, sub_user)).send()
     else:
         await MessageUtils.build_message(
             "参数错误，第一参数必须为：主播/up/番剧！"
@@ -256,7 +261,7 @@ async def _(
     logger.info(
         f"(USER {session.id1}, GROUP "
         f"{gid if gid else 'private'})"
-        f" 添加订阅：{sub_type} -> {sub_user} -> {id_}"
+        f" 添加订阅：{sub_type} -> {sub_user} -> {sub_id}"
     )
 
 
@@ -279,45 +284,96 @@ async def _(
         await MessageUtils.build_message(f"删除订阅id：{id_} 成功...").send()
         gid = session.id3 or session.id2
         logger.info(
-            f"(USER {session.id1}, GROUP "
-            f"{gid if gid else 'private'})"
-            f" 删除订阅 {id_}"
+            f"(USER {session.id1}, GROUP {gid if gid else 'private'}) 删除订阅 {id_}"
         )
     else:
         await MessageUtils.build_message(f"删除订阅id：{id_} 失败...").send()
 
 
+async def format_subscription_info(sub_data: BilibiliSub) -> tuple[str, str, str]:
+    """
+    格式化单个订阅信息
+
+    Args:
+        sub_data: 订阅数据对象
+
+    Returns:
+        tuple[str, str, str]: 直播、UP主、番剧的格式化信息
+    """
+    live_info = up_info = season_info = ""
+
+    if sub_data.sub_type == "live":
+        live_info = f"\t直播间id：{sub_data.sub_id}\n\t名称：{sub_data.uname}\n"
+    elif sub_data.sub_type == "up":
+        up_info = f"\tUP：{sub_data.uname}\n\tuid：{sub_data.uid}\n"
+    elif sub_data.sub_type == "season":
+        season_info = (
+            f"\t番剧id：{sub_data.sub_id}\n"
+            f"\t番名：{sub_data.season_name}\n"
+            f"\t当前集数：{sub_data.season_current_episode}\n"
+        )
+
+    return live_info, up_info, season_info
+
+
+async def format_subscription_list(
+    subscriptions: list[BilibiliSub], gid: str | None
+) -> str:
+    """
+    格式化订阅列表信息
+
+    Args:
+        subscriptions: 订阅数据列表
+        gid: 群组ID，如果是私聊则为None
+
+    Returns:
+        str: 格式化后的订阅信息
+    """
+    if not subscriptions:
+        return "该群目前没有任何订阅..." if gid else "您目前没有任何订阅..."
+
+    # 分类存储不同类型的订阅信息
+    subscription_info = {"live": [], "up": [], "season": []}
+
+    # 处理每个订阅
+    for sub in subscriptions:
+        live_info, up_info, season_info = await format_subscription_info(sub)
+        if live_info:
+            subscription_info["live"].append(live_info)
+        if up_info:
+            subscription_info["up"].append(up_info)
+        if season_info:
+            subscription_info["season"].append(season_info)
+
+    # 组装最终结果
+    divider = "------------------\n"
+    sections = []
+
+    if subscription_info["live"]:
+        sections.append(f"当前订阅的直播：\n{divider.join(subscription_info['live'])}")
+    if subscription_info["up"]:
+        sections.append(f"当前订阅的UP：\n{divider.join(subscription_info['up'])}")
+    if subscription_info["season"]:
+        sections.append(
+            f"当前订阅的番剧：\n{divider.join(subscription_info['season'])}"
+        )
+
+    return "\n\n".join(sections)
+
+
 @show_sub_info.handle()
 async def _(session: EventSession):
+    """显示用户或群组的订阅信息"""
+    # 获取用户/群组ID
     gid = session.id3 or session.id2
     id_ = gid if gid else session.id1
-    data = await BilibiliSub.filter(sub_users__contains=id_).all()
-    live_rst = ""
-    up_rst = ""
-    season_rst = ""
-    for x in data:
-        if x.sub_type == "live":
-            live_rst += (
-                f"\t直播间id：{x.sub_id}\n"
-                f"\t名称：{x.uname}\n"
-                f"------------------\n"
-            )
-        if x.sub_type == "up":
-            up_rst += f"\tUP：{x.uname}\n" f"\tuid：{x.uid}\n" f"------------------\n"
-        if x.sub_type == "season":
-            season_rst += (
-                f"\t番剧id：{x.sub_id}\n"
-                f"\t番名：{x.season_name}\n"
-                f"\t当前集数：{x.season_current_episode}\n"
-                f"------------------\n"
-            )
-    live_rst = "当前订阅的直播：\n" + live_rst if live_rst else live_rst
-    up_rst = "当前订阅的UP：\n" + up_rst if up_rst else up_rst
-    season_rst = "当前订阅的番剧：\n" + season_rst if season_rst else season_rst
-    if not live_rst and not up_rst and not season_rst:
-        live_rst = "该群目前没有任何订阅..." if gid else "您目前没有任何订阅..."
 
-    img = await text2image(live_rst + up_rst + season_rst, padding=10, color="#f9f6f2")
+    # 获取并格式化订阅数据
+    subscriptions = await BilibiliSub.filter(sub_users__contains=id_).all()
+    content = await format_subscription_list(subscriptions, gid)
+
+    # 生成并发送图片
+    img = await text2image(content, padding=10, color="#f9f6f2")
     await MessageUtils.build_message(img).finish()
 
 
@@ -347,13 +403,13 @@ async def _(matcher: Matcher):
     if not img:
         await MessageUtils.build_message("获取二维码失败").finish()
     buffered = BytesIO()
-    img.save(buffered, format="PNG")
+    img.save(buffered, format="PNG")  # type:ignore
     img_data = buffered.getvalue()
     await MessageUtils.build_message(img_data).send()
     try:
         auth = await login.qrcode_login(interval=5)
         assert auth, "登录失败，返回数据为空"
-        logger.debug(auth.data)
+        logger.debug(f"登录返回数据: {auth.data}")
         AuthManager.add_auth(auth)
     except Exception as e:
         await MessageUtils.build_message(f"登录失败: {e}").finish()
@@ -366,117 +422,160 @@ async def _(uid: int):
         await MessageUtils.build_message(msg).finish()
     await MessageUtils.build_message(f"账号 {uid} 已退出登录").finish()
 
+
 def should_run():
     """判断当前时间是否在运行时间段内（7点30到次日1点）"""
     now = datetime.now().time()
     # 如果当前时间在 7:30 到 23:59:59 之间，或者 0:00 到 1:00 之间，则运行
-    return (now >= datetime.strptime(base_config.get("SLEEP_END_TIME"), "%H:%M").time()) or (now < datetime.strptime(base_config.get("SLEEP_START_TIME"), "%H:%M").time())
+    return (
+        now >= datetime.strptime(base_config.get("SLEEP_END_TIME"), "%H:%M").time()
+    ) or (now < datetime.strptime(base_config.get("SLEEP_START_TIME"), "%H:%M").time())
 
 
-# 信号量，限制并发任务数
-semaphore = asyncio.Semaphore(200)
+semaphore = asyncio.Semaphore(150)
 
-# 推送
+
+async def process_single_subscription(bot, sub) -> None:
+    """
+    处理单个订阅的逻辑
+    """
+    try:
+        logger.info(f"Bilibili订阅开始检测：{sub.sub_id}，类型：{sub.sub_type}")
+
+        async def check_status():
+            if msg_list := await get_sub_status(sub.sub_id, sub.sub_type):
+                await send_sub_msg(msg_list, sub, bot)
+
+            # 如果是直播订阅，额外检查UP主动态
+            if sub.sub_type == "live":
+                if up_msg_list := await get_sub_status(sub.sub_id, "up"):
+                    await send_sub_msg(up_msg_list, sub, bot)
+
+        await asyncio.wait_for(check_status(), timeout=30)
+
+    except asyncio.TimeoutError:
+        logger.error(f"任务超时：检测订阅 {sub.sub_id} 时超时")
+    except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error(
+            f"处理订阅时出错：{sub.sub_id}, 错误：{e}\n详细信息：\n{error_details}"
+        )
+
+
 @scheduler.scheduled_job(
     "interval",
-    seconds=base_config.get("CHECK_TIME") if base_config.get("CHECK_TIME") else 30,  
-    max_instances=500,
-    misfire_grace_time=40,
+    seconds=4,
+    misfire_grace_time=30,
+    max_instances=30,
+    coalesce=True,
 )
 async def check_subscriptions():
     """
     定时任务：检查订阅并发送消息
     """
-    async with semaphore:  # 限制并发任务数
-        if base_config.get("ENABLE_SLEEP_MODE"):
-            if not should_run():
+    try:
+        async with semaphore:
+            # 检查是否在休眠时间
+            if base_config.get("ENABLE_SLEEP_MODE") and not should_run():
                 return
 
-        bots = nonebot.get_bots()
-        if not bots:
-            logger.warning("No available bots found.")
-            return
+            # 获取可用的机器人
+            bots = nonebot.get_bots()
+            if not bots:
+                logger.warning("No available bots found.")
+                return
 
-        for bot in bots.values():
-            if not bot:
-                continue
+            # 确保sub_manager已初始化
+            if sub_manager is None:
+                logger.error("SubManager not initialized")
+                return
 
-            try:
-                # 获取随机订阅数据
-                sub = await sub_manager.random_sub_data()
-                if not sub:
-                    logger.info("No subscription data available.")
-                    continue
+            # 获取订阅数据
+            sub = await sub_manager.random_sub_data()
+            if not sub:
+                logger.info("No subscription data available.")
+                return
 
-                logger.info(
-                    f"Bilibili订阅开始检测：{sub.sub_id}，类型：{sub.sub_type}"
-                )
+            # 对每个可用的机器人处理订阅
+            for bot in bots.values():
+                if bot:
+                    await process_single_subscription(bot, sub)
 
-                # 获取订阅状态，设置超时时间为30秒
-                msg_list = await asyncio.wait_for(
-                    get_sub_status(sub.sub_id, sub.sub_type), timeout=30
-                )
-
-                if msg_list:
-                    await send_sub_msg(msg_list, sub, bot)
-
-                    # 如果是直播订阅，额外检测UP主动态
-                    if sub.sub_type == "live":
-                        msg_list = await asyncio.wait_for(
-                            get_sub_status(sub.sub_id, "up"), timeout=30
-                        )
-                        if msg_list:
-                            await send_sub_msg(msg_list, sub, bot)
-
-            except asyncio.TimeoutError:
-                logger.error(f"任务超时：检测订阅 {sub.sub_id} 时超时")
-            except Exception as e:
-                logger.error(f"任务异常：检测订阅 {sub.sub_id} 时出错：{e}")
+    except Exception as e:
+        logger.error(f"检查订阅任务整体异常：{e}")
 
 
 async def send_sub_msg(msg_list: list, sub: BilibiliSub, bot: Bot):
     """
-    推送信息
-    :param msg_list: 消息列表
-    :param sub: BilibiliSub
-    :param bot: Bot
+    推送订阅消息到群组或私聊
+
+    Args:
+        msg_list (list): 待发送的消息列表
+        sub (BilibiliSub): 订阅信息对象
+        bot (Bot): 机器人实例
     """
-    temp_group = []
-    if msg_list:
-        for x in sub.sub_users.split(",")[:-1]:
-            try:
-                if ":" in x and x.split(":")[1] not in temp_group:
-                    group_id = x.split(":")[1]
-                    temp_group.append(group_id)
-                    if (
+    if not msg_list:
+        return
+
+    processed_groups = set()
+
+    for user in sub.sub_users.split(",")[:-1]:
+        try:
+            # 处理群消息
+            if ":" in user:
+                _, group_id = user.split(":")
+
+                if group_id in processed_groups:
+                    continue
+                processed_groups.add(group_id)
+
+                # 检查插件是否被禁用
+                if await GroupConsole.is_block_plugin(group_id, "bilibili_sub"):
+                    continue
+
+                messages = msg_list.copy()
+
+                # 检查是否需要 at 全体
+                try:
+                    bot_role = (
                         await bot.get_group_member_info(
                             group_id=int(group_id),
                             user_id=int(bot.self_id),
                             no_cache=True,
                         )
-                    )["role"] in ["owner", "admin"]:
-                        if (
+                    )["role"]
+
+                    if bot_role in ["owner", "admin"]:
+                        should_at_all = (
                             sub.sub_type == "live"
                             and Config.get_config("bilibili_sub", "LIVE_MSG_AT_ALL")
                         ) or (
                             sub.sub_type == "up"
                             and Config.get_config("bilibili_sub", "UP_MSG_AT_ALL")
-                        ):
-                            msg_list.insert(0, UniMessage.at_all() + "\n")
-                    if not await GroupConsole.is_block_plugin(group_id, "bilibili_sub"):
-                        await PlatformUtils.send_message(
-                            bot,
-                            user_id=None,
-                            group_id=group_id,
-                            message=MessageUtils.build_message(msg_list),
                         )
+                        if should_at_all:
+                            messages.insert(0, UniMessage.at_all() + "\n")
+                except Exception as e:
+                    logger.warning(f"获取机器人权限失败: {e}")
 
-                else:
-                    await PlatformUtils.send_message(
-                        bot,
-                        user_id=x,
-                        group_id=None,
-                        message=MessageUtils.build_message(msg_list),
-                    )
-            except Exception as e:
-                logger.error(f"B站订阅推送发生错误 sub_id：{sub.sub_id} {type(e)}：{e}")
+                # 发送群消息
+                await PlatformUtils.send_message(
+                    bot,
+                    user_id=None,
+                    group_id=group_id,
+                    message=MessageUtils.build_message(messages),
+                )
+
+            # 处理私聊消息
+            else:
+                await PlatformUtils.send_message(
+                    bot,
+                    user_id=user,
+                    group_id=None,
+                    message=MessageUtils.build_message(msg_list),
+                )
+
+        except Exception as e:
+            logger.error(
+                f"B站订阅推送失败 - sub_id: {sub.sub_id}, 错误类型: {type(e)}, 错误信息: {e}"
+            )

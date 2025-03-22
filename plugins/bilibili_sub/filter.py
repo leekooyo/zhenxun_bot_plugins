@@ -1,81 +1,150 @@
 import asyncio
 import json
-from playwright.async_api import async_playwright
-from zhenxun.services.log import logger
 import os
+from typing import TypedDict
 
-# 获取当前文件的目录
-current_dir = os.path.dirname(os.path.abspath(__file__))
-cookies_path = os.path.join(current_dir, "cookies.json")
+import aiofiles
+from playwright._impl._api_structures import SetCookieParam
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
-async def check_page_elements(url):
+from zhenxun.services.log import logger
+
+# 配置常量
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIES_PATH = os.path.join(CURRENT_DIR, "cookies.json")
+
+
+class Cookie(TypedDict):
+    name: str
+    value: str
+    domain: str
+    path: str
+    sameSite: str
+    secure: bool
+    httpOnly: bool
+
+
+# 需要检测的广告相关类名
+AD_CLASS_NAMES = [
+    "opus-text-rich-hl",  # 文字广告
+    "goods-shop",  # 商品店铺
+    "bili-dyn-card-goods",  # B站动态商品卡片
+    "dyn-goods",  # 动态商品
+    "dyn-goods__mark",  # 商品标记
+]
+
+MAX_ATTEMPTS = 3  # 最大检测重试次数
+
+
+async def load_cookies() -> list[SetCookieParam] | None:
     """
-    使用无头浏览器和 Cookie 检查页面中的元素是否被拦截，并导出所有页面元素。
+    加载并处理cookies配置
 
-    :param url: 要检查的页面 URL
-    :param cookies_path: Cookie 文件的路径
-    :return: 是否包含被拦截的元素
+    Returns:
+        List[SetCookieParam] | None: 处理后的cookies列表，失败时返回None
     """
     try:
-        # 读取 cookies.json 文件
-        with open(cookies_path, 'r') as f:
-            cookies = json.load(f)
+        async with aiofiles.open(COOKIES_PATH) as f:
+            content = await f.read()
+            cookies: list[SetCookieParam] = json.loads(content)
 
-        # 修复 sameSite 字段
+        # 修正cookies的sameSite属性
         for cookie in cookies:
-            if cookie.get("sameSite", "").lower() == "unspecified":
-                cookie["sameSite"] = "Lax"  # 或者 "Strict" 或 "None"
+            same_site = cookie.get("sameSite") or ""
+            if same_site.lower() == "unspecified":
+                cookie["sameSite"] = "Lax"
 
-        async with async_playwright() as p:
-            # 启动无头浏览器
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
+        return cookies
+    except Exception as e:
+        logger.error(f"加载cookies失败: {e}")
+        return None
 
-            # 添加 Cookie 到浏览器上下文中
-            await context.add_cookies(cookies)
 
-            # 创建新页面
-            page = await context.new_page()
+async def setup_browser_context() -> tuple[Browser, BrowserContext]:
+    """
+    设置浏览器环境
 
-            # 要拦截的元素的类名
-            class_names = ["opus-text-rich-hl", "goods-shop", "bili-dyn-card-goods", "dyn-goods", "dyn-goods__mark"]
-            max_attempts = 3  # 最大刷新次数
-            attempt = 0
+    Returns:
+        tuple[Browser, BrowserContext]: 浏览器实例和上下文
+    """
+    playwright = await async_playwright().start()
+    browser = await playwright.chromium.launch(headless=True)
+    context = await browser.new_context()
 
-            while attempt < max_attempts:
-                # 加载页面
+    if cookies := await load_cookies():
+        await context.add_cookies(cookies)
+
+    return browser, context
+
+
+async def check_blocked_elements(page: Page) -> bool:
+    """
+    检查页面是否包含被拦截的广告元素
+
+    Args:
+        page: Playwright页面实例
+
+    Returns:
+        bool: True表示发现广告元素，False表示未发现
+    """
+    for class_name in AD_CLASS_NAMES:
+        if await page.locator(f".{class_name}").count() > 0:
+            logger.info(f"检测到广告元素: {class_name}")
+            return True
+    return False
+
+
+async def check_page_elements(url: str) -> bool:
+    """
+    检查页面是否包含广告元素
+
+    Args:
+        url: 要检查的页面URL
+
+    Returns:
+        bool: True表示包含广告，False表示不包含或检查失败
+    """
+    browser = None
+    try:
+        browser, context = await setup_browser_context()
+        page = await context.new_page()
+
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                # 加载页面并等待网络请求完成
                 await page.goto(url)
-                await page.wait_for_load_state('networkidle')  # 等待页面完全加载
+                await page.wait_for_load_state("networkidle")
 
-                # 检查页面中是否包含被拦截的元素
-                found_blocked_element = False
-                for class_name in class_names:
-                    if await page.locator(f".{class_name}").count() > 0:
-                        logger.info(f"页面中包含被拦截的元素: {class_name}")
-                        found_blocked_element = True
-                        break
-
-                if not found_blocked_element:
-                    attempt += 1
-                    logger.info(f"刷新页面，尝试次数: {attempt}")
-                    continue  # 如果发现被拦截元素，刷新页面重新检查
-                else:
-                    # 如果三次都没有发现被拦截元素，返回 True
-                    await browser.close()
+                # 检查是否包含广告元素
+                if await check_blocked_elements(page):
                     return True
 
-            # 如果三次检查中都发现了被拦截元素，返回 False
-            await browser.close()
-            return False
+                logger.info(f"第{attempt + 1}次检查未发现广告元素，继续检查...")
 
-    except Exception as e:
-        logger.error(f"检查页面元素时出错: {e}")
+            except Exception as e:
+                msg = f"页面检查过程出错 (尝试 {attempt + 1}/{MAX_ATTEMPTS})"
+                logger.error(f"{msg}: {e}")
+                continue
+
         return False
 
+    except Exception as e:
+        logger.error(f"广告检查任务失败: {e}")
+        return False
+
+    finally:
+        if browser:
+            await browser.close()
+
+
 async def main():
-    url = input("请输入要检查的页面 URL: ")
+    """
+    主函数，用于命令行测试
+    """
+    url = input("请输入要检查的页面URL: ")
     result = await check_page_elements(url)
-    print(f"页面是否包含被拦截的元素: {result}")
+    print(f"页面广告检测结果: {'包含广告' if result else '未发现广告'}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
