@@ -8,6 +8,7 @@ from nonebot.adapters.onebot.v11 import (
     MessageEvent,
     PrivateMessageEvent,
     GROUP,
+    MessageSegment,
 )
 from os.path import join
 NICKNAME=["真寻", "小真寻", "绪山真寻", "小寻子"]
@@ -15,6 +16,9 @@ from .Life import Life
 from .PicClass import *
 import traceback
 import random
+from zhenxun.utils.image_utils import text2image
+from zhenxun.utils.message import MessageUtils
+from base64 import b64encode
 
 __zx_plugin_name__ = "人生重开 - lifeRestart"
 __plugin_usage__ = """
@@ -71,9 +75,6 @@ def genp(prop):
 
 @remake.handle()
 async def _(bot: Bot, event: MessageEvent, state: T_State):
-    pic_list = []
-    mes_list = []
-
     Life.load(join(FILE_PATH, "data"))
     while True:
         life = Life()
@@ -96,28 +97,72 @@ async def _(bot: Bot, event: MessageEvent, state: T_State):
     person = person + "智力值:" + str(life.property.INT) + "  "
     person = person + "体质值:" + str(life.property.STR) + "  "
     person = person + "财富值:" + str(life.property.MNY) + "  "
-    pic_list.append("这是" + name + "本次轮回的基础属性和天赋:")
-    pic_list.append(ImgText(person).draw_text())
 
     await bot.send(event, "你的命运正在重启....", at_sender=True)
     logger.info(
         f"USER {event.user_id} GROUP {event.group_id if not isinstance(event, PrivateMessageEvent) else ''} "
         f"感觉人生太过垃圾，remake了"
     )
-    res = life.run()  # 命运之轮开始转动
-    mes = "\n".join("\n".join(x) for x in res)
-    pic_list.append("这是" + name + "本次轮回的生平:")
-    pic_list.append(ImgText(mes).draw_text())
-
-    sums = life.property.gensummary()  # 你的命运之轮到头了
-    pic_list.append("这是" + name + "本次轮回的评价:")
-    pic_list.append(ImgText(sums).draw_text())
-
-    for img in pic_list:
-        data = {
-            "type": "node",
-            "data": {"name": f"{NICKNAME}", "uin": f"{bot.self_id}", "content": img},
+    
+    # 生成所有图片并转换为消息
+    mes_list = []
+    
+    # 基础属性图片
+    base_info_img = await text2image(
+        f"这是{name}本次轮回的基础属性和天赋:\n{person}",
+        font_size=25,
+        color=(255, 255, 255),
+        padding=(20, 20, 20, 20),
+        font="HYWenHei-85W.ttf",
+        font_color=(0, 0, 0)
+    )
+    mes_list.append({
+        "type": "node",
+        "data": {
+            "name": random.choice(NICKNAME),
+            "uin": bot.self_id,
+            "content": MessageSegment.image(base_info_img.pic2bytes())
         }
-        mes_list.append(data)
+    })
+    
+    # 生成生平图片
+    res = life.run()
+    life_history = "\n".join("\n".join(x) for x in res)
+    history_img = await text2image(
+        f"这是{name}本次轮回的生平:\n{life_history}",
+        font_size=25,
+        color=(255, 255, 255),
+        padding=(20, 20, 20, 20),
+        font="HYWenHei-85W.ttf",
+        font_color=(0, 0, 0)
+    )
+    mes_list.append({
+        "type": "node",
+        "data": {
+            "name": random.choice(NICKNAME),
+            "uin": bot.self_id,
+            "content": MessageSegment.image(history_img.pic2bytes())
+        }
+    })
+    
+    # 生成评价图片
+    sums = life.property.gensummary()
+    summary_img = await text2image(
+        f"这是{name}本次轮回的评价:\n{sums}",
+        font_size=25,
+        color=(255, 255, 255),
+        padding=(20, 20, 20, 20),
+        font="HYWenHei-85W.ttf",
+        font_color=(0, 0, 0)
+    )
+    mes_list.append({
+        "type": "node",
+        "data": {
+            "name": random.choice(NICKNAME),
+            "uin": bot.self_id,
+            "content": MessageSegment.image(summary_img.pic2bytes())
+        }
+    })
 
+    # 发送转发消息
     await bot.send_group_forward_msg(group_id=event.group_id, messages=mes_list)

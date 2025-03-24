@@ -7,7 +7,10 @@ from pathlib import Path
 from zhenxun.services.log import logger
 from nonebot import on_command
 from nonebot.typing import T_State
-from nonebot.adapters.onebot.v11 import Bot, Event, PrivateMessageEvent, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, Event, PrivateMessageEvent, GroupMessageEvent, MessageSegment
+
+from zhenxun.utils.message import MessageUtils
+from zhenxun.utils.image_utils import BuildImage
 
 dir_path = Path(__file__).parent
 IMG_PATH = str((dir_path / "tarot").absolute()) + '\\'
@@ -49,103 +52,92 @@ async def _(bot: Bot, event: Event, state: T_State):
     indices = random.sample(range(1, 78), 4)
     card_keys = list(cards.keys())
     shuffle(card_keys)
-    chain = []
+    
+    # 构建消息链
+    mes_list = []
     for count in range(4):
         logger.info(f"第{count}轮")
         index = int(indices[count])
         card_key = card_keys[index - 1]
-
-        # 特殊规则：愚者有两张
-        if card_key == "愚者":
-            rand = randint(1, 2)
-            image_path = f"{IMG_PATH}{card_key}{rand}.jpg"
-        else:
-            image_path = f"{IMG_PATH}{card_key}.jpg"
-
-        with open(image_path, "rb") as image_file:
-            encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-
-        meaning_key = list(meanings.keys())[count]
-        meaning_value = meanings[meaning_key]
-
-        # 特殊规则：小阿卡纳分正位逆位
-        if isinstance(cards[card_key], dict):
-            rand = randint(1, 2)
-            if rand == 1:
-                card_value = cards[card_key]["正位"]
-                card_key += "（正位）"
-            else:
-                card_value = cards[card_key]["逆位"]
-                card_key += "（逆位）"
-        else:
-            card_value = cards[card_key]
-
-        if isinstance(event, PrivateMessageEvent):
-            msg = []
-            msg.extend(
-                [
-                    name,
-                    "的",
-                    meaning_key,
-                    "，",
-                    meaning_value,
-                    "\n",
-                    card_key,
-                    "，",
-                    card_value,
-                    "\n",
-                    # f"[CQ:image,file={image_file}]",
-                    f"[CQ:image,file=base64://{encoded_image}]",
-                ]
+        
+        # 获取牌面图片
+        image = await get_card_image(card_key)
+        
+        # 获取牌面含义
+        card_meaning = get_card_meaning(card_key, cards)
+        meaning_text = get_meaning_text(count, meanings)
+        
+        # 构建消息文本
+        msg_text = (
+            f"{name}的{meaning_text[0]}，{meaning_text[1]}\n"
+            f"{card_meaning[0]}，{card_meaning[1]}\n"
+        )
+        
+        # 构建消息节点
+        mes_list.append({
+            "type": "node",
+            "data": {
+                "name": random.choice(NICKNAME),
+                "uin": bot.self_id,
+                "content": msg_text + MessageSegment.image(image.pic2bytes())
+            }
+        })
+            
+    # 根据消息类型发送
+    if isinstance(event, PrivateMessageEvent):
+        # 私聊逐条发送
+        for mes in mes_list:
+            await bot.send_private_msg(
+                user_id=event.user_id,
+                message=mes["data"]["content"]
             )
-            logger.info(msg)
-            if count < 3:
-                await bot.send_private_msg(user_id=event.user_id, message="".join(msg))
-            else:
-                await bot.send_private_msg(user_id=event.user_id, message="".join(msg))
-        else:
-            msg = []
-            msg.extend(
-                [name,
-                 "的",
-                 meaning_key,
-                 "，",
-                 meaning_value,
-                 "\n",
-                 card_key,
-                 "，",
-                 card_value,
-                 "\n"]
-            )
-            if count < 4:
-                chain = await chain_reply(bot, chain, msg, f"base64://{encoded_image}")
-                # sv.logger.info(chain)
-    if isinstance(event, GroupMessageEvent):
-        await bot.send_group_forward_msg(group_id=event.group_id, messages=chain)
+    else:
+        # 群聊合并转发
+        await bot.send_group_forward_msg(
+            group_id=event.group_id,
+            messages=mes_list
+        )
 
+async def get_card_image(card_key: str) -> BuildImage:
+    """获取塔罗牌图片"""
+    # 特殊规则：愚者有两张
+    if card_key == "愚者":
+        rand = randint(1, 2)
+        image_path = Path(IMG_PATH) / f"{card_key}{rand}.jpg"
+    else:
+        image_path = Path(IMG_PATH) / f"{card_key}.jpg"
+    return BuildImage.open(image_path)
 
-async def chain_reply(bot, chain, msg, image):
-    msg = "".join(msg)
-    data = {
-        "type": "node",
-        "data": {
-            "name": f"{NICKNAME}",
-            "uin": f"{bot.self_id}",
-            "content": [
-                {"type": "text",
-                 "data":
-                     {"text": msg}
-                 },
-                {"type": "image",
-                 "data":
-                     {"file": image}
-                 },
-            ],
-        },
-    }
-    chain.append(data)
-    return chain
+def get_card_meaning(card_key: str, cards_dict: dict) -> tuple[str, str]:
+    """获取塔罗牌含义"""
+    # 特殊规则：小阿卡纳分正位逆位
+    if isinstance(cards_dict[card_key], dict):
+        rand = randint(1, 2)
+        if rand == 1:
+            return f"{card_key}（正位）", cards_dict[card_key]["正位"]
+        return f"{card_key}（逆位）", cards_dict[card_key]["逆位"]
+    return card_key, cards_dict[card_key]
 
+def get_meaning_text(count: int, meanings_dict: dict) -> tuple[str, str]:
+    """获取含义说明文本"""
+    meaning_key = list(meanings_dict.keys())[count]
+    return meaning_key, meanings_dict[meaning_key]
+
+async def send_private_message(bot: Bot, user_id: int, msg_text: list, image: BuildImage):
+    """发送私聊消息"""
+    msg = MessageUtils.build_message([
+        "".join(msg_text),
+        image
+    ])
+    await bot.send_private_msg(user_id=user_id, message=msg)
+
+async def add_to_forward_chain(bot: Bot, chain: list, msg_text: list, image: BuildImage):
+    """添加消息到转发消息链"""
+    msg = MessageUtils.build_message([
+        "".join(msg_text),
+        image
+    ])
+    return await MessageUtils.alc_forward_msg([msg], bot.self_id, f"{NICKNAME[0]}")
 
 cards = {
     "圣杯1": "家庭生活之幸福，别的牌可给予其更多内涵，如宾客来访、宴席、吵架",
