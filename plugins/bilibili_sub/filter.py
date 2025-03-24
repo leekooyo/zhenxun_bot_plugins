@@ -31,6 +31,7 @@ AD_CLASS_NAMES = [
     "bili-dyn-card-goods",  # B站动态商品卡片
     "dyn-goods",  # 动态商品
     "dyn-goods__mark",  # 商品标记
+    "icon--taobao",  # 淘宝商品链接
 ]
 
 MAX_ATTEMPTS = 3  # 最大检测重试次数

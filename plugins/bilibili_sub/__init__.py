@@ -268,26 +268,47 @@ async def _(
 @del_sub.got("sub_type")
 @del_sub.got("sub_user")
 @del_sub.got("id")
-async def _(
+async def handle_delete_subscription(
     session: EventSession,
     id_: str = ArgStr("id"),
     sub_type: str = ArgStr("sub_type"),
     sub_user: str = ArgStr("sub_user"),
 ):
-    if sub_type in ["主播", "直播"]:
-        result = await BilibiliSub.delete_bilibili_sub(int(id_), sub_user, "live")
-    elif sub_type.lower() in ["up", "用户"]:
-        result = await BilibiliSub.delete_bilibili_sub(int(id_), sub_user, "up")
-    else:
-        result = await BilibiliSub.delete_bilibili_sub(int(id_), sub_user)
-    if result:
-        await MessageUtils.build_message(f"删除订阅id：{id_} 成功...").send()
-        gid = session.id3 or session.id2
-        logger.info(
-            f"(USER {session.id1}, GROUP {gid if gid else 'private'}) 删除订阅 {id_}"
+    """
+    处理删除订阅的请求
+    """
+    # 确定订阅类型
+    sub_type_mapping = {
+        "主播": "live",
+        "直播": "live",
+        "up": "up",
+        "用户": "up"
+    }
+    # 获取标准化的订阅类型
+    normalized_type = sub_type_mapping.get(sub_type.lower())
+    try:
+        # 执行删除操作
+        result = await BilibiliSub.delete_bilibili_sub(
+            int(id_),
+            sub_user,
+            normalized_type  # 如果normalized_type为None，将使用默认类型
         )
-    else:
-        await MessageUtils.build_message(f"删除订阅id：{id_} 失败...").send()
+        # 处理删除结果
+        if result:
+            await MessageUtils.build_message(f"删除订阅id：{id_} 成功...").send()
+            # 记录日志
+            gid = session.id3 or session.id2
+            logger.info(
+                f"(USER {session.id1}, GROUP {gid if gid else 'private'}) "
+                f"删除订阅 {id_} 成功"
+            )
+        else:
+            await MessageUtils.build_message(f"删除订阅id：{id_} 失败...").send()
+    except ValueError:
+        await MessageUtils.build_message("订阅ID必须为数字").send()
+    except Exception as e:
+        logger.error(f"删除订阅时发生错误: {e}")
+        await MessageUtils.build_message("删除订阅时发生错误").send()
 
 
 async def format_subscription_info(sub_data: BilibiliSub) -> tuple[str, str, str]:
@@ -336,7 +357,10 @@ async def format_subscription_list(
     subscription_info = {"live": [], "up": [], "season": []}
 
     # 处理每个订阅
-    for sub in subscriptions:
+    # 对订阅列表进行排序，按照uid正序排序
+    sorted_subscriptions = sorted(subscriptions, key=lambda x: x.uid if x.uid else float('inf'))
+    
+    for sub in sorted_subscriptions:
         live_info, up_info, season_info = await format_subscription_info(sub)
         if live_info:
             subscription_info["live"].append(live_info)

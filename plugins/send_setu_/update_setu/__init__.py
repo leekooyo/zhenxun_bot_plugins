@@ -1,11 +1,3 @@
-'''
-Author: xx
-Date: 2025-03-22 15:36:23
-LastEditors: Do not edit
-LastEditTime: 2025-03-23 00:58:32
-Description: 
-FilePath: \zhenxun\zhenxun_bot\zhenxun\plugins\send_setu_\update_setu\__init__.py
-'''
 from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
@@ -48,15 +40,16 @@ _matcher = on_alconna(
 _update_setu_semaphore = asyncio.Semaphore(5)
 
 @_matcher.handle()
-async def _(session: EventSession, arparma: Arparma):
-    if Config.get_config("send_setu", "DOWNLOAD_SETU"):
-        await MessageUtils.build_message("开始更新色图...").send(reply_to=True)
-        result = await update_setu_img(True)
-        if result:
-            await MessageUtils.build_message(result).send()
-        logger.info("更新色图", arparma.header_result, session=session)
-    else:
+async def handle_update_setu_command(session: EventSession, arparma: Arparma):
+    if not Config.get_config("send_setu", "DOWNLOAD_SETU"):
         await MessageUtils.build_message("更新色图配置未开启...").send()
+        return
+        
+    await MessageUtils.build_message("开始更新色图...").send(reply_to=True)
+    result = await update_setu_img(True)
+    if result:
+        await MessageUtils.build_message(result).send()
+    logger.info("更新色图", arparma.header_result, session=session)
 
 
 # 更新色图
@@ -66,13 +59,15 @@ async def _(session: EventSession, arparma: Arparma):
     minute=30,
 )
 async def update_setu_images_task():
+    if not Config.get_config("send_setu", "DOWNLOAD_SETU"):
+        return
+        
     try:
         async with _update_setu_semaphore:
-            async with timeout(30):  # 30秒超时控制
-                if Config.get_config("send_setu", "DOWNLOAD_SETU"):
-                    result = await update_setu_img()
-                    if result:
-                        logger.info(result, "自动更新色图")
+            async with timeout(600):
+                result = await update_setu_img()
+                if result:
+                    logger.info(result, "自动更新色图")
     except asyncio.TimeoutError:
         logger.error("更新色图任务超时...")
     except Exception as e:

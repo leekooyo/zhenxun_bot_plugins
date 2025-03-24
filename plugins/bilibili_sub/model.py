@@ -137,7 +137,7 @@ class BilibiliSub(Model):
             删除指定用户的订阅
         参数:
             :param sub_id: 订阅名称
-            :param sub_user: 要删除的用户
+            :param sub_user: 要删除的用户 (格式: user_id:group_id 或 user_id)
             :param sub_type: 订阅类型
         """
         try:
@@ -152,16 +152,22 @@ class BilibiliSub(Model):
 
             # 解析现有的订阅用户列表
             sub_users_list = sub.sub_users.split(",") if sub.sub_users else []
-            # 过滤掉要删除的用户
+            # 获取当前群号
+            current_group = sub_user.split(":")[-1] if ":" in sub_user else None
+            # 过滤并保留订阅用户
             new_sub_users = [
-                user for user in sub_users_list 
-                if user and sub_user not in user
+                user for user in sub_users_list
+                if user and (
+                    (":" in user and user.split(":")[-1] != current_group) or
+                    (":" not in user and user != sub_user)
+                )
             ]
 
             if not new_sub_users:
-                # 如果没有其他订阅用户了，删除整个记录
                 await sub.delete()
             else:
+                # 按UID排序
+                new_sub_users.sort(key=lambda x: int(x.split(":")[0] if ":" in x else x))
                 # 更新订阅用户列表
                 sub.sub_users = ",".join(new_sub_users) + ","
                 await sub.save()
