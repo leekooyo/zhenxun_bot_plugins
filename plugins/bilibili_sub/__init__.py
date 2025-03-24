@@ -459,39 +459,13 @@ def should_run():
 semaphore = asyncio.Semaphore(150)
 
 
-async def process_single_subscription(bot, sub) -> None:
-    """
-    处理单个订阅的逻辑
-    """
-    try:
-        logger.info(f"Bilibili订阅开始检测：{sub.sub_id}，类型：{sub.sub_type}")
-
-        async def check_status():
-            if msg_list := await get_sub_status(sub.sub_id, sub.sub_type):
-                await send_sub_msg(msg_list, sub, bot)
-
-            # 如果是直播订阅，额外检查UP主动态
-            if sub.sub_type == "live":
-                if up_msg_list := await get_sub_status(sub.sub_id, "up"):
-                    await send_sub_msg(up_msg_list, sub, bot)
-
-        await asyncio.wait_for(check_status(), timeout=30)
-
-    except asyncio.TimeoutError:
-        logger.error(f"任务超时：检测订阅 {sub.sub_id} 时超时")
-    except Exception as e:
-        error_details = traceback.format_exc()
-        logger.error(
-            f"处理订阅时出错：{sub.sub_id}, 错误：{e}\n详细信息：\n{error_details}"
-        )
-
-
 @scheduler.scheduled_job(
     "interval",
     seconds=4,
     misfire_grace_time=30,
-    max_instances=30,
+    max_instances=100,
     coalesce=True,
+    id="bilibili_sub_check"
 )
 async def check_subscriptions():
     """
@@ -523,10 +497,45 @@ async def check_subscriptions():
             # 对每个可用的机器人处理订阅
             for bot in bots.values():
                 if bot:
-                    await process_single_subscription(bot, sub)
+                    try:
+                        await asyncio.wait_for(process_single_subscription(bot, sub), timeout=30)
+                    except asyncio.TimeoutError:
+                        logger.error(f"处理订阅 {sub.sub_id} 超时，跳过当前订阅")
+                        continue
+                    except Exception as e:
+                        logger.error(f"处理订阅 {sub.sub_id} 时发生错误: {e}")
+                        continue
 
     except Exception as e:
         logger.error(f"检查订阅任务整体异常：{e}")
+
+
+async def process_single_subscription(bot, sub) -> None:
+    """
+    处理单个订阅的逻辑
+    """
+    try:
+
+        async def check_status():
+            if msg_list := await get_sub_status(sub.sub_id, sub.sub_type):
+                await send_sub_msg(msg_list, sub, bot)
+
+            # 如果是直播订阅，额外检查UP主动态
+            if sub.sub_type == "live":
+                if up_msg_list := await get_sub_status(sub.sub_id, "up"):
+                    await send_sub_msg(up_msg_list, sub, bot)
+
+        await check_status()
+
+    except asyncio.TimeoutError:
+        logger.error(f"任务超时：检测订阅 {sub.sub_id} 时超时")
+        raise  # 向上传递超时异常
+    except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error(
+            f"处理订阅时出错：{sub.sub_id}, 错误：{e}\n详细信息：\n{error_details}"
+        )
+        raise  # 向上传递异常
 
 
 async def send_sub_msg(msg_list: list, sub: BilibiliSub, bot: Bot):

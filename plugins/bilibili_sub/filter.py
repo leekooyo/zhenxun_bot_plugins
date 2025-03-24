@@ -120,8 +120,6 @@ async def check_page_elements(url: str) -> bool:
                 if await check_blocked_elements(page):
                     return True
 
-                logger.info(f"第{attempt + 1}次检查未发现广告元素，继续检查...")
-
             except Exception as e:
                 msg = f"页面检查过程出错 (尝试 {attempt + 1}/{MAX_ATTEMPTS})"
                 logger.error(f"{msg}: {e}")

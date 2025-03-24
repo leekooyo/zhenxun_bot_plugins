@@ -1,65 +1,72 @@
+'''
+Author: xx
+Date: 2025-03-22 15:36:23
+LastEditors: Do not edit
+LastEditTime: 2025-03-24 16:05:28
+Description: 
+FilePath: \zhenxun\zhenxun_bot\zhenxun\plugins\parse_bilibili\parse_url.py
+'''
+from typing import Dict, Callable, Coroutine, Any
 import aiohttp
+import asyncio
 from bilireq import live, video
-
 from zhenxun.utils.user_agent import get_user_agent
-
 from .get_image import get_image
 from .information_container import InformationContainer
 
+# URL 处理器映射
+URL_HANDLERS = {
+    "www.bilibili.com/video": lambda vid, url: video.get_video_base_info(vid),
+    "m.bilibili.com/video": lambda vid, url: video.get_video_base_info(vid),
+    "live.bilibili.com": lambda rid, url: live.get_room_info_by_id(rid),
+    "www.bilibili.com/read": lambda _, url: get_image(url),
+    "www.bilibili.com/opus": lambda _, url: get_image(url),
+    "t.bilibili.com": lambda _, url: get_image(url),
+}
 
-async def parse_bili_url(get_url: str, information_container: InformationContainer):
-    """解析Bilibili链接，获取相关信息
+def clean_url(url: str) -> str:
+    """清理和标准化 URL"""
+    return url.rstrip("/").split("?")[0]
 
-    参数:
-        get_url (str): 待解析的Bilibili链接
-        information_container (InformationContainer): 信息容器
-
-    返回:
-        dict: 包含解析得到的信息的字典
-    """
-    response_url = ""
-
-    # 去除链接末尾的斜杠
-    if get_url[-1] == "/":
-        get_url = get_url[:-1]
-
-    # 发起HTTP请求，获取重定向后的链接
+async def get_redirected_url(url: str) -> str:
+    """获取重定向后的 URL"""
     async with aiohttp.ClientSession(headers=get_user_agent()) as session:
-        async with session.get(
-            get_url,
-            timeout=7,
-        ) as response:
-            response_url = str(response.url).split("?")[0]
+        try:
+            async with session.get(url, timeout=7) as response:
+                return clean_url(str(response.url))
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            raise ValueError(f"获取 URL 失败: {e}")
 
-    # 去除重定向后链接末尾的斜杠
-    if response_url[-1] == "/":
-        response_url = response_url[:-1]
+async def parse_bili_url(get_url: str, information_container: InformationContainer) -> Dict:
+    """解析 Bilibili 链接，获取相关信息"""
+    try:
+        # 获取并清理 URL
+        url = clean_url(get_url)
+        response_url = await get_redirected_url(url)
 
-    # 根据不同类型的链接进行处理
-    if response_url.startswith(
-        ("https://www.bilibili.com/video", "https://m.bilibili.com/video/")
-    ):
-        vd_url = response_url
-        vid = vd_url.split("/")[-1]
-        vd_info = await video.get_video_base_info(vid)
-        information_container.update({"vd_info": vd_info, "vd_url": vd_url})
+        # 查找匹配的处理器
+        handler = None
+        for url_pattern, url_handler in URL_HANDLERS.items():
+            if url_pattern in response_url:
+                handler = url_handler
+                break
+        
+        if not handler:
+            raise ValueError(f"不支持的 URL 类型: {response_url}")
 
-    elif response_url.startswith("https://live.bilibili.com"):
-        live_url = response_url
-        liveid = live_url.split("/")[-1]
-        live_info = await live.get_room_info_by_id(liveid)
-        information_container.update({"live_info": live_info, "live_url": live_url})
+        # 提取 ID 并处理
+        resource_id = response_url.split("/")[-1]
+        info = await handler(resource_id, response_url)
 
-    elif response_url.startswith("https://www.bilibili.com/read"):
-        cv_url = response_url
-        image_info = await get_image(cv_url)
-        information_container.update({"image_info": image_info, "image_url": cv_url})
+        # 更新信息容器
+        if "video" in response_url:
+            information_container.update({"vd_info": info, "vd_url": response_url})
+        elif "live" in response_url:
+            information_container.update({"live_info": info, "live_url": response_url})
+        else:
+            information_container.update({"image_info": info, "image_url": response_url})
 
-    elif response_url.startswith(
-        ("https://www.bilibili.com/opus", "https://t.bilibili.com")
-    ):
-        opus_url = response_url
-        image_info = await get_image(opus_url)
-        information_container.update({"image_info": image_info, "image_url": opus_url})
+        return information_container.get_information()
 
-    return information_container.get_information()
+    except Exception as e:
+        raise ValueError(f"解析 Bilibili URL 失败: {e}")
