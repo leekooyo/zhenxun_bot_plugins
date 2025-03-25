@@ -100,7 +100,13 @@ class JmDownload:
     MAX_RETRIES = 3
 
     @classmethod
+<<<<<<< HEAD
     async def upload_file(cls, data: DetailInfo, zip_path: Optional[Path] = None) -> bool:
+=======
+    async def upload_file(cls, data: DetailInfo, zip_path: Path | None = None):
+        if zip_path is None:
+            zip_path = CreateZip(data).create()
+>>>>>>> ede9e0e625238aa2daca0577d30bbb6c5479bfd8
         try:
             if zip_path is None:
                 zip_path = CreateZip(data).create()
@@ -153,13 +159,35 @@ class JmDownload:
         del cls._data[album.id]
 
     @classmethod
+<<<<<<< HEAD
     async def download_album(cls, bot: Bot, user_id: str, group_id: Optional[str], album_id: str):
+=======
+    async def download_album(
+        cls, bot: Bot, user_id: str, group_id: str | None, album_id: str
+    ):
+>>>>>>> ede9e0e625238aa2daca0577d30bbb6c5479bfd8
         zip_path = ZIP_OUTPUT_PATH / f"{album_id}.zip"
 
         if zip_path.exists():
             await cls.upload_file(
+<<<<<<< HEAD
                 DetailInfo(bot=bot, user_id=user_id, group_id=group_id, album_id=album_id),
                 zip_path=zip_path
+=======
+                DetailInfo(
+                    bot=bot, user_id=user_id, group_id=group_id, album_id=album_id
+                ),
+                zip_path=zip_path
+            )
+        else:
+            if album_id not in cls._data:
+                cls._data[album_id] = []
+            cls._data[album_id].append(
+                DetailInfo(
+                    bot=bot, user_id=user_id, group_id=group_id, album_id=album_id
+                ),
+                zip_path=None
+>>>>>>> ede9e0e625238aa2daca0577d30bbb6c5479bfd8
             )
             return
 
