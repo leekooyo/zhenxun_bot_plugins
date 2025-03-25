@@ -1,6 +1,6 @@
 # 开启jmcomic的日志输出，默认为true
 # 对日志有需求的可进一步参考文档 → https://jmcomic.readthedocs.io/en/latest/tutorial/11_log_custom/
-log: true
+log: false
 
 # 下载配置
 download:
@@ -13,7 +13,7 @@ download:
     # 数值大，下得快，配置要求高，对禁漫压力大
     # 数值小，下得慢，配置要求低，对禁漫压力小
     # PS: 禁漫网页一次最多请求50张图
-    image: 30
+    image: 15
     # photo: 同时下载的章节数，不配置默认是cpu的线程数。例如8核16线程的cpu → 16.
     photo: 16
 
