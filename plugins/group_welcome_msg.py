@@ -1,3 +1,11 @@
+'''
+Author: xx
+Date: 2025-03-22 15:36:22
+LastEditors: Do not edit
+LastEditTime: 2025-03-26 15:03:21
+Description: 
+FilePath: \zhenxun\zhenxun_bot\zhenxun\plugins\group_welcome_msg.py
+'''
 import re
 
 from nonebot.plugin import PluginMetadata
@@ -45,9 +53,15 @@ async def _(
             / f"{session.id3}"
             / f"{session.id2}"
         )
+    
     file = path / "text.json"
     if not file.exists():
-        await MessageUtils.build_message("未设置群欢迎消息...").finish(reply_to=True)
+        # 如果群组特定的欢迎语不存在，尝试使用默认欢迎语
+        default_file = BASE_PATH / f"{session.platform or session.bot_type}" / "text.json"
+        if not default_file.exists():
+            await MessageUtils.build_message("未设置群欢迎消息...").finish(reply_to=True)
+        file = default_file
+
     message = json.load(open(file, encoding="utf8"))["message"]
     message_split = re.split(r"\[image:\d+\]", message)
     if len(message_split) == 1:
