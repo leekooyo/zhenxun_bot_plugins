@@ -16,6 +16,14 @@ from typing import Set
 
 from .utils import config, eating_manager, Meals
 
+MEAL_SCHEDULE = {
+    Meals.BREAKFAST: {"hour": 7, "name": "早餐"},
+    Meals.LUNCH: {"hour": 12, "name": "午餐"},
+    Meals.SNACK: {"hour": 15, "name": "下午茶"},
+    Meals.DINNER: {"hour": 18, "name": "晚餐"},
+    Meals.MIDNIGHT: {"hour": 21, "name": "夜宵"}
+}
+
 __zx_plugin_name__ = "吃饭小助手"
 __plugin_usage__ = """
 usage：
@@ -85,12 +93,7 @@ async def handle_what2eat(bot: Bot, event: GroupMessageEvent):
 @switch_greating.handle()
 async def handle_switch_greeting(bot: Bot, event: GroupMessageEvent):
     action = event.get_plaintext()[:2]
-    if action == "开启":
-        scheduler.resume()
-        msg = "已开启按时吃饭小助手~"
-    elif action == "关闭":
-        scheduler.pause()
-        msg = "已关闭按时吃饭小助手~"
+    msg = meal_reminder.switch_reminder(action == "开启")
     await switch_greating.finish(msg)
 
 @add_greating.handle()
@@ -109,54 +112,66 @@ async def handle_remove_greeting(bot: Bot, event: GroupMessageEvent, args: Messa
         return
     await remove_greating.finish(eating_manager.remove_greating(args[0]))
 
-# 定时任务配置
-MEAL_SCHEDULE = {
-    Meals.BREAKFAST: {"hour": 7, "name": "早餐"},
-    Meals.LUNCH: {"hour": 12, "name": "午餐"},
-    Meals.SNACK: {"hour": 15, "name": "下午茶"},
-    Meals.DINNER: {"hour": 18, "name": "晚餐"},
-    Meals.MIDNIGHT: {"hour": 21, "name": "夜宵"}
-}
+class MealReminderManager:
+    """用于管理定时提醒任务的类"""
+    def __init__(self):
+        self.semaphore = asyncio.Semaphore(3)
+        self.running_tasks: Set[Meals] = set()
+        self.task_locks = {meal: asyncio.Lock() for meal in Meals}
+        self.scheduler = require("nonebot_plugin_apscheduler").scheduler
+        self.is_enabled = True
 
-scheduler = require("nonebot_plugin_apscheduler").scheduler
-semaphore, running_tasks = asyncio.Semaphore(3), set()
-task_locks = {meal: asyncio.Lock() for meal in Meals}
+    async def send_reminder(self, meal_type: Meals) -> None:
+        """发送定时提醒消息"""
+        if not self.is_enabled or meal_type in self.running_tasks:
+            return
 
-async def send_meal_reminder(meal_type: Meals) -> None:
-    """发送定时提醒消息
-    Args:
-        meal_type (Meals): 餐次类型
-    """
-    if meal_type in running_tasks: return
-    
-    async with semaphore, task_locks[meal_type]:
-        try:
-            running_tasks.add(meal_type)
-            msg = eating_manager.get2greating(meal_type)
-            if msg and config.groups_id:
+        async with self.semaphore, self.task_locks[meal_type]:
+            try:
+                self.running_tasks.add(meal_type)
+                msg = eating_manager.get2greating(meal_type)
+                if not msg or not config.groups_id:
+                    return
+
                 bot = get_bot()
                 meal_name = MEAL_SCHEDULE[meal_type]['name']
+                failed_groups = []
+
                 for gid in config.groups_id:
                     try:
                         await bot.send_group_msg(group_id=int(gid), message=msg)
                     except Exception as e:
-                        logger.error(f"发送{meal_name}提醒到群{gid}失败: {e}")
-                logger.info(f"已群发{meal_name}提醒")
-        except Exception as e:
-            logger.error(f"{MEAL_SCHEDULE[meal_type]['name']}提醒任务执行失败: {e}")
-        finally:
-            running_tasks.remove(meal_type)
+                        failed_groups.append(gid)
+                        logger.error(f"发送{meal_name}提醒到群{gid}失败: {str(e)}")
 
-# 注册定时任务
-for meal_type, cfg in MEAL_SCHEDULE.items():
-    @scheduler.scheduled_job("cron", hour=cfg["hour"], minute=0, id=f"meal_reminder_{meal_type}")
-    async def handle_meal_reminder(): await send_meal_reminder(meal_type)
+                if failed_groups:
+                    logger.warning(f"{meal_name}提醒发送失败的群: {', '.join(map(str, failed_groups))}")
+                else:
+                    logger.info(f"已成功群发{meal_name}提醒")
 
-@scheduler.scheduled_job("cron", hour="6,11,17,22", minute=0)
-async def handle_reset_eating_count() -> None:
-    """重置每日吃什么次数"""
-    try:
-        eating_manager.reset_eating()
-        logger.info("今天吃什么次数已刷新")
-    except Exception as e:
-        logger.error(f"重置吃什么次数失败: {e}")
+            except Exception as e:
+                logger.error(f"{MEAL_SCHEDULE[meal_type]['name']}提醒任务执行失败: {str(e)}")
+            finally:
+                self.running_tasks.discard(meal_type)
+
+    def switch_reminder(self, enable: bool) -> str:
+        """开启或关闭定时提醒"""
+        self.is_enabled = enable
+        status = "开启" if enable else "关闭"
+        return f"已{status}按时吃饭小助手~"
+
+    def register_schedules(self) -> None:
+        """注册所有定时任务"""
+        for meal_type, cfg in MEAL_SCHEDULE.items():
+            self.scheduler.add_job(
+                self.send_reminder,
+                "cron",
+                args=[meal_type],
+                hour=cfg["hour"],
+                minute=0,
+                id=f"meal_reminder_{meal_type}"
+            )
+
+# 创建全局实例
+meal_reminder = MealReminderManager()
+meal_reminder.register_schedules()
