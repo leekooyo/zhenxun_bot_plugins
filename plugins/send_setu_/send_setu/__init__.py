@@ -192,10 +192,10 @@ async def _(
         user_id=session.id1,
         defaults={"user_console": user_console, "platform": session.platform},
     )
-    if session.id1 not in bot.config.superusers:
-        """超级用户跳过罗翔"""
-        if result := SetuManage.get_luo(float(user.impression)):
-            await result.finish()
+    # if session.id1 not in bot.config.superusers:
+    #     """超级用户跳过罗翔"""
+    #     if result := SetuManage.get_luo(float(user.impression)):
+    #         await result.finish()
     is_r18 = arparma.find("r")
     _num = chinese_to_digit(num.result) if num.available else 1
     max_once_num = base_config.get("MAX_ONCE_NUM")

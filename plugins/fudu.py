@@ -126,11 +126,6 @@ async def _(message: UniMsg, event: Event, session: Uninfo):
         random.random() < base_config.get("FUDU_PROBABILITY")
         and not _manage.is_repeater(group_id)
     ):
-        if random.random() < 0.2:
-            if plain_text.startswith("打断施法"):
-                await MessageUtils.build_message(f"打断{plain_text}").finish()
-            else:
-                await MessageUtils.build_message("打断施法！").finish()
         _manage.set_repeater(group_id)
         rst = None
         if image_list and plain_text:
