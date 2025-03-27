@@ -1,66 +1,91 @@
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
+"""
+Author: xx
+Date: 2025-03-22 16:02:14
+LastEditors: Do not edit
+LastEditTime: 2025-03-27 18:10:49
+Description: 吃饭小助手工具类
+"""
+
+from nonebot_plugin_session import EventSession
 from nonebot import logger
-import nonebot
 import random
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Set
 from enum import Enum
-from .download import get_preset
-from .config import PluginConfig
+import asyncio
+from pydantic import BaseModel, Field
+from zhenxun.configs.config import Config
+from zhenxun.utils.platform import broadcast_group
+
 try:
     import ujson as json
 except ModuleNotFoundError:
     import json
 
-global_config = nonebot.get_driver().config
-config: PluginConfig = PluginConfig.parse_obj(global_config.dict())
+
+class What2EatConfig(BaseModel):
+    """吃饭小助手配置"""
+
+    eating_limit: int = 3
+    """每日吃饭次数限制"""
+    use_preset_menu: bool = True
+    """是否使用预设菜单"""
+    use_preset_greating: bool = True
+    """是否使用预设问候语"""
+    groups_id: List[int] = Field(default_factory=list)
+    """需要发送提醒的群组ID列表"""
+
+
+# 获取配置
+what2eat_config = Config.get("what2eat")
+
+
+def get_groups_id() -> List[int]:
+    """
+    获取需要发送提醒的群组ID列表
+    """
+    return what2eat_config.get("groups_id", [])
+
 
 class Meals(Enum):
-    BREAKFAST   = "breakfast"
-    LUNCH       = "lunch"
-    SNACK       = "snack"
-    DINNER      = "dinner"
-    MIDNIGHT    = "midnight"
+    BREAKFAST = "breakfast"
+    LUNCH = "lunch"
+    SNACK = "snack"
+    DINNER = "dinner"
+    MIDNIGHT = "midnight"
+
+
+MEAL_SCHEDULE = {
+    Meals.BREAKFAST: {"hour": 7, "name": "早餐"},
+    Meals.LUNCH: {"hour": 12, "name": "午餐"},
+    Meals.SNACK: {"hour": 15, "name": "下午茶"},
+    Meals.DINNER: {"hour": 18, "name": "晚餐"},
+    Meals.MIDNIGHT: {"hour": 21, "name": "夜宵"},
+}
+
 
 class EatingManager:
-
     def __init__(self, path: Optional[Path]):
         self.greating_enbale = True
         self._data = {}
         self._greating = {}
         if not path:
-            data_file = Path(config.what2eat_path) / "data.json"
-            greating_file = Path(config.what2eat_path) / "greating.json"
+            logger.info(Path(__file__).parent)
+            data_file = Path(__file__).parent / "resource" / "data.json"
+            greating_file = Path(__file__).parent / "resource" / "greating.json"
         else:
             data_file = path / "data.json"
             greating_file = path / "greating.json"
-        
+
         self.data_file = data_file
         self.greating_file = greating_file
-        if not data_file.exists():
-            if config.use_preset_menu:
-                logger.info("Downloading preset what2eat menu resource...")
-                get_preset(data_file, "MENU")
-            else:
-                with open(data_file, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(dict()))
-                    f.close()
 
         if data_file.exists():
-            with open(data_file, "r", encoding="utf-8") as f:
+            with open(data_file, encoding="utf-8") as f:
                 self._data = json.load(f)
-        
-        if not greating_file.exists():
-            if config.use_preset_greating:
-                logger.info("Downloading preset what2eat greating resource...")
-                get_preset(greating_file, "GREATING")
-            else:
-                with open(greating_file, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(dict()))
-                    f.close()
 
         if greating_file.exists():
-            with open(greating_file, "r", encoding="utf-8") as f:
+            with open(greating_file, encoding="utf-8") as f:
                 self._greating = json.load(f)
 
         self._init_json()
@@ -72,15 +97,15 @@ class EatingManager:
             self._data["group_food"] = {}
         if "eating" not in self._data.keys():
             self._data["eating"] = {}
-        
+
         for meal in Meals:
             if meal.value not in self._greating.keys():
                 self._greating[meal.value] = []
-    
+
     def _init_data(self, group_id: str, user_id: str) -> None:
-        '''
-            初始化用户信息
-        '''
+        """
+        初始化用户信息
+        """
         if group_id not in self._data["group_food"].keys():
             self._data["group_food"][group_id] = []
         if group_id not in self._data["eating"].keys():
@@ -88,45 +113,37 @@ class EatingManager:
         if user_id not in self._data["eating"][group_id].keys():
             self._data["eating"][group_id][user_id] = 0
 
-    def get2eat(self, event: GroupMessageEvent) -> str:
-        '''
-            今天吃什么
-        '''
-        user_id = str(event.user_id)
-        group_id = str(event.group_id)
+    def get2eat(self, session: EventSession) -> str:
+        """
+        今天吃什么
+        """
+        user_id = str(session.id1)
+        group_id = str(session.id2)
 
         self._init_data(group_id, user_id)
-        if not self.eating_check(event):
-            return random.choice(
-                [
-                    "你今天已经吃得够多了！",
-                    "吃这么多的吗？",
-                    "害搁这吃呢？不工作的吗？",
-                    "再吃肚子就要爆炸咯~"
-                ]
-            )
-        else:
-            # 菜单全为空，建议避免["basic_food"]为空
-            if len(self._data["basic_food"]) == 0 and len(self._data["group_food"][group_id]) == 0:
-                return "还没有菜单呢，就先饿着肚子吧，请[添加 菜名]🤤"
-            
-            food_list = self._data["basic_food"].copy()
-            if len(self._data["group_food"][group_id]) > 0:
-                food_list.extend(self._data["group_food"][group_id])
+        if (
+            len(self._data["basic_food"]) == 0
+            and len(self._data["group_food"][group_id]) == 0
+        ):
+            return "还没有菜单呢，就先饿着肚子吧，请[添加 菜名]🤤"
 
-            msg = "建议" + random.choice(food_list)
-            self._data["eating"][group_id][user_id] += 1
-            self.save()
+        food_list = self._data["basic_food"].copy()
+        if len(self._data["group_food"][group_id]) > 0:
+            food_list.extend(self._data["group_food"][group_id])
 
-            return msg
-    
-    '''
+        msg = "建议" + random.choice(food_list)
+        self._data["eating"][group_id][user_id] += 1
+        self.save()
+
+        return msg
+
+    def food_exists(self, _food_: str) -> int:
+        """
         检查菜品是否存在
         1:  存在于基础菜单
         2:  存在于群菜单
         0:  不存在
-    '''
-    def food_exists(self, _food_: str) -> int:
+        """
         for food in self._data["basic_food"]:
             if food == _food_:
                 return 1
@@ -135,39 +152,39 @@ class EatingManager:
             for food in self._data["group_food"][group_id]:
                 if food == _food_:
                     return 2
-        
+
         return 0
 
-    '''
+    def eating_check(self, session: EventSession) -> bool:
+        """
         检查是否吃饱
-    '''
-    def eating_check(self, event: GroupMessageEvent) -> bool:
-        user_id = str(event.user_id)
-        group_id = str(event.group_id)
-        return False if self._data["eating"][group_id][user_id] >= config.eating_limit else True
+        """
+        user_id = str(session.id1)
+        group_id = str(session.id2)
+        eating_limit = what2eat_config.get("eating_limit", 3)
+        return (
+            False if self._data["eating"][group_id][user_id] >= eating_limit else True
+        )
 
-    '''
-        添加至群菜单中 GROUP_ADMIN | GROUP_OWNER 权限
-    '''
-    def add_group_food(self, new_food: str, event: GroupMessageEvent) -> str:
-        user_id = str(event.user_id)
-        group_id = str(event.group_id)
+    def add_or_remove_dish(self, action: str, dish: str) -> str:
+        """
+        添加或移除菜品
+        """
+        if action == "添加":
+            return self.add_basic_food(dish)
+        else:
+            return self.remove_food(dish)
 
-        self._init_data(group_id, user_id)
-        status = self.food_exists(new_food)
-        if status == 1:
-            return f"{new_food} 已在基础菜单中~"
-        elif status == 2:
-            return f"{new_food} 已在群特色菜单中~"
+    def add_to_base_menu(self, dish: str) -> str:
+        """
+        添加至基础菜单
+        """
+        return self.add_basic_food(dish)
 
-        self._data["group_food"][group_id].append(new_food)
-        self.save()
-        return f"{new_food} 已加入群特色菜单~"
-
-    '''
-        添加至基础菜单 SUPERUSER 权限
-    '''
     def add_basic_food(self, new_food: str) -> str:
+        """
+        添加至基础菜单 SUPERUSER 权限
+        """
         status = self.food_exists(new_food)
         if status == 1:
             return f"{new_food} 已在基础菜单中~"
@@ -178,130 +195,170 @@ class EatingManager:
         self.save()
         return f"{new_food} 已加入基础菜单~"
 
-    '''
+    def remove_food(self, food_to_remove: str) -> str:
+        """
         从基础菜单移除 SUPERUSER 权限
-        从群菜单中移除 GROUP_ADMIN | GROUP_OWNER 权限
-    '''
-    def remove_food(self, food_to_remove: str, event: GroupMessageEvent) -> str:
-        user_id = str(event.user_id)
-        group_id = str(event.group_id)
-        
-        self._init_data(group_id, user_id)
+        """
         status = self.food_exists(food_to_remove)
         if not status:
             return f"{food_to_remove} 不在菜单中哦~"
 
-        # 在群菜单
-        if status == 2:
-            self._data["group_food"][group_id].remove(food_to_remove)
-            self.save()
-            return f"{food_to_remove} 已从群菜单中删除~"
         # 在基础菜单
+        if status == 1:
+            self._data["basic_food"].remove(food_to_remove)
+            self.save()
+            return f"{food_to_remove} 已从基础菜单中删除~"
+        # 在群菜单
         else:
-            if user_id not in config.superusers:
-                return f"{food_to_remove} 在基础菜单中，非超管不可操作哦~"
-            else:
-                self._data["basic_food"].remove(food_to_remove)
-                self.save()
-                return f"{food_to_remove} 已从基础菜单中删除~"    
+            for group_id in self._data["group_food"]:
+                if food_to_remove in self._data["group_food"][group_id]:
+                    self._data["group_food"][group_id].remove(food_to_remove)
+                    self.save()
+                    return f"{food_to_remove} 已从群菜单中删除~"
 
     def reset_eating(self) -> None:
-        '''
-            重置三餐 eating times
-        '''
-        for group_id in self._data["eating"].keys():
-            for user_id in self._data["eating"][group_id].keys():
+        """
+        重置用户食用次数
+        """
+        for group_id in self._data["eating"]:
+            for user_id in self._data["eating"][group_id]:
                 self._data["eating"][group_id][user_id] = 0
-        
         self.save()
 
     def save(self) -> None:
-        '''
-            保存数据
-        '''
-        with open(self.data_file, 'w', encoding='utf-8') as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=4)
-        
-        with open(self.greating_file, 'w', encoding='utf-8') as f:
-            json.dump(self._greating, f, ensure_ascii=False, indent=4)
+        """
+        保存数据
+        """
+        with open(self.data_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(self._data, ensure_ascii=False, indent=4))
+            f.close()
+        with open(self.greating_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(self._greating, ensure_ascii=False, indent=4))
+            f.close()
 
-    def show_group_menu(self, event: GroupMessageEvent) -> str:
-        user_id = str(event.user_id)
-        group_id = str(event.group_id)
-        msg = []
-        
-        self._init_data(group_id, user_id)
-        if len(self._data["group_food"][group_id]) > 0:
-            msg += MessageSegment.text("---群特色菜单---\n")
-            for food in self._data["group_food"][group_id]:
-                msg += MessageSegment.text(f"{food}\n")
-        
-        return msg if len(msg) > 0 else "还没有群特色菜单呢，请[添加 菜名]~"
+    def get_menu(self, session: EventSession) -> str:
+        """
+        获取群菜单
+        """
+        group_id = str(session.id2)
+        user_id = str(session.id1)
 
-    def show_basic_menu(self) -> str:
-        msg = []
+        if group_id not in self._data["group_food"]:
+            self._init_data(group_id, user_id)
 
-        if len(self._data["basic_food"]) > 0:
-            msg += MessageSegment.text("---基础菜单---\n")
-            for food in self._data["basic_food"]:
-                msg += MessageSegment.text(f"{food}\n")
-        
-        return msg if len(msg) > 0 else "还没有基础菜单呢，请[添加 菜名]~"
+        if not self._data["group_food"][group_id]:
+            return "群菜单为空，请使用[加菜 菜名]添加菜品~"
 
-    '''
-        干饭/摸鱼小助手：获取问候语，问候语为空返回None
-    '''
+        msg = "群特色菜单：\n"
+        for food in self._data["group_food"][group_id]:
+            msg += f"- {food}\n"
+        return msg
+
+    def get_base_menu(self) -> str:
+        """
+        获取基础菜单
+        """
+        if not self._data["basic_food"]:
+            return "基础菜单为空，请使用[加菜 菜名]添加菜品~"
+
+        msg = "基础菜单：\n"
+        for food in self._data["basic_food"]:
+            msg += f"- {food}\n"
+        return msg
+
     def get2greating(self, meal: Meals) -> Optional[str]:
-        if len(self._greating.get(meal.value)) > 0:
-            greatings = self._greating[meal.value]
-            return random.choice(greatings)
-        else:
+        """
+        获取问候语
+        """
+        if not self._greating[meal.value]:
             return None
+        return random.choice(self._greating[meal.value])
 
-    '''
-        添加某一时段问候语
-    '''
     def add_greating(self, args: List) -> str:
-        if args[0] == "早餐":
-            meal = Meals.BREAKFAST.value
-        elif args[0] == "中餐":
-            meal = Meals.LUNCH.value
-        elif args[0] == "摸鱼" or args[0] == "饮茶":
-            meal = Meals.SNACK.value
-        elif args[0] == "晚餐":
-            meal = Meals.DINNER.value
-        elif args[0] == "夜宵":
-            meal = Meals.MIDNIGHT.value
-        else:
-            return f"请检查输入参数{args[0]}是否正确~"
-            
+        """
+        添加问候语
+        """
+        if len(args) != 2:
+            return "请输入正确的参数格式：类别 问候语"
+
+        meal_type = args[0]
         greating = args[1]
-        self._greating[meal].append(greating)
+
+        if meal_type not in [meal.value for meal in Meals]:
+            return f"不支持的类别：{meal_type}"
+
+        self._greating[meal_type].append(greating)
         self.save()
+        return f"已添加{meal_type}的问候语：{greating}"
 
-        return f"{greating} 已加入 {args[0]} 问候~"
-
-    '''
-        删除某一时段最新的问候语
-    '''
     def remove_greating(self, arg: str) -> str:
-        if arg == "早餐":
-            meal = Meals.BREAKFAST.value
-        elif arg == "中餐":
-            meal = Meals.LUNCH.value
-        elif arg == "摸鱼" or arg == "饮茶":
-            meal = Meals.SNACK.value
-        elif arg == "晚餐":
-            meal = Meals.DINNER.value
-        elif arg == "夜宵":
-            meal = Meals.MIDNIGHT.value
-        else:
-            return f"请检查输入参数{arg}是否正确~"
-        
-        greating = self._greating[meal].pop()
+        """
+        删除问候语
+        """
+        if arg not in [meal.value for meal in Meals]:
+            return f"不支持的类别：{arg}"
+
+        if not self._greating[arg]:
+            return f"{arg}没有问候语~"
+
+        self._greating[arg] = []
         self.save()
+        return f"已删除{arg}的所有问候语~"
 
-        return f"{greating} 已从 {arg} 问候中移除~"
+
+class MealReminderManager:
+    """用于管理定时提醒任务的类"""
+
+    def __init__(self):
+        self.semaphore = asyncio.Semaphore(3)
+        self.running_tasks: Set[Meals] = set()
+        self.task_locks = {meal: asyncio.Lock() for meal in Meals}
+        self.is_enabled = True
+
+    async def send_reminder(self, meal_type: Meals) -> None:
+        """发送定时提醒消息"""
+        if not self.is_enabled or meal_type in self.running_tasks:
+            return
+
+        async with self.semaphore, self.task_locks[meal_type]:
+            try:
+                self.running_tasks.add(meal_type)
+                msg = eating_manager.get2greating(meal_type)
+                groups_id = get_groups_id()
+                if not msg or not groups_id:
+                    return
+
+                meal_name = MEAL_SCHEDULE[meal_type]["name"]
+                failed_groups = []
+
+                for gid in groups_id:
+                    try:
+                        await broadcast_group(msg, group_id=int(gid))
+                    except Exception as e:
+                        failed_groups.append(gid)
+                        logger.error(f"发送{meal_name}提醒到群{gid}失败: {str(e)}")
+
+                if failed_groups:
+                    logger.warning(
+                        f"{meal_name}提醒发送失败的群: {', '.join(map(str, failed_groups))}"
+                    )
+                else:
+                    logger.info(f"已成功群发{meal_name}提醒")
+
+            except Exception as e:
+                logger.error(
+                    f"{MEAL_SCHEDULE[meal_type]['name']}提醒任务执行失败: {str(e)}"
+                )
+            finally:
+                self.running_tasks.discard(meal_type)
+
+    def switch_reminder(self, enable: bool) -> str:
+        """开启或关闭定时提醒"""
+        self.is_enabled = enable
+        status = "开启" if enable else "关闭"
+        return f"已{status}按时吃饭小助手~"
 
 
-eating_manager = EatingManager(Path(config.what2eat_path))
+# 创建全局实例
+eating_manager = EatingManager(None)
+meal_reminder = MealReminderManager()

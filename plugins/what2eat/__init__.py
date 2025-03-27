@@ -1,177 +1,246 @@
-from nonebot import get_bot, on_command, on_regex, require
-from nonebot.adapters.onebot.v11 import (
-    Bot,
-    GROUP,
-    GROUP_ADMIN,
-    GROUP_OWNER,
-    GroupMessageEvent,
-    Message,
-    MessageSegment,
-)
-from nonebot.log import logger
-from nonebot.params import CommandArg
+from pathlib import Path
+import shutil
+
 from nonebot.permission import SUPERUSER
-import asyncio
-from typing import Set
+from nonebot.plugin import PluginMetadata
+from nonebot_plugin_alconna import Alconna, Arparma, on_alconna
+from nonebot_plugin_session import EventSession
+from nonebot_plugin_apscheduler import scheduler
 
-from .utils import config, eating_manager, Meals
+from zhenxun.configs.path_config import TEMPLATE_PATH
+from zhenxun.configs.utils import Command, PluginExtraData, RegisterConfig, Task
+from zhenxun.services.log import logger
+from zhenxun.services.plugin_init import PluginInit
+from zhenxun.utils.message import MessageUtils
 
-MEAL_SCHEDULE = {
-    Meals.BREAKFAST: {"hour": 7, "name": "早餐"},
-    Meals.LUNCH: {"hour": 12, "name": "午餐"},
-    Meals.SNACK: {"hour": 15, "name": "下午茶"},
-    Meals.DINNER: {"hour": 18, "name": "晚餐"},
-    Meals.MIDNIGHT: {"hour": 21, "name": "夜宵"}
-}
+from .utils import meal_reminder, MEAL_SCHEDULE, Meals, eating_manager
 
-__zx_plugin_name__ = "吃饭小助手"
-__plugin_usage__ = """
-usage：
-    选择恐惧症？让Bot建议你今天吃什么！吃什么：今天吃什么、中午吃啥、今晚吃啥、中午吃什么、晚上吃啥、晚上吃什么、夜宵吃啥……
-    查看群菜单：菜单/群菜单/查看菜单；
-    [su] 添加或移除：添加/移除 菜名；
-    [su] 添加至基础菜单：加菜 菜名；
-    [su] 查看基础菜单：基础菜单；
-    [su] 开启/关闭按时吃饭小助手：开启/关闭小助手；
-""".strip()
-__plugin_des__ = "吃饭小助手"
-__plugin_cmd__ = [
-    "菜单/群菜单/查看菜单",
-    "添加/移除",
-    "加菜",
-    "基础菜单",
-    "开启/关闭小助手",
-    "开启/关闭按时吃饭小助手",
-]
 
-greating_helper = require("nonebot_plugin_apscheduler").scheduler
-eating_helper = require("nonebot_plugin_apscheduler").scheduler
-
-__what2eat_version__ = "v0.2.6"
-plugin_notes = f"""
-今天吃什么？ {__what2eat_version__}
-[xx吃xx]    问bot恰什么
-[添加 xx]   添加菜品至群菜单
-[移除 xx]   从菜单移除菜品
-[加菜 xx]   添加菜品至基础菜单
-[菜单]       查看群菜单
-[基础菜单]查看基础菜单
-[开启/关闭小助手]   开启/关闭按时吃饭小助手""".strip()
-
-plugin_help = on_command("吃什么帮助", permission=GROUP, priority=5, block=True)
-what2eat = on_regex(r"(\w*吃(?:什么|啥|点啥))", permission=GROUP, priority=5, block=True)
-
-switch_greating = on_regex(
-    r"(开启|关闭)小助手", 
-    permission=SUPERUSER, 
-    priority=5, 
-    block=True
+__plugin_meta__ = PluginMetadata(
+    name="吃饭小助手",
+    description="选择恐惧症？让Bot建议你今天吃什么！",
+    usage="""
+    指令：
+        今天吃什么/中午吃啥/今晚吃啥/中午吃什么/晚上吃啥/晚上吃什么/夜宵吃啥
+        菜单/群菜单/查看菜单
+        [su] 添加/移除 菜名
+        [su] 加菜 菜名
+        [su] 基础菜单
+        [su] 开启/关闭小助手
+    """.strip(),
+    extra=PluginExtraData(
+        author="HibiKier",
+        version="0.2.6",
+        superuser_help="""重置吃饭小助手""",
+        commands=[
+            Command(command="今天吃什么"),
+            Command(command="菜单"),
+            Command(command="添加"),
+            Command(command="移除"),
+            Command(command="加菜"),
+            Command(command="基础菜单"),
+            Command(command="开启小助手"),
+            Command(command="关闭小助手"),
+        ],
+        tasks=[Task(module="what2eat", name="吃饭小助手")],
+        configs=[
+            RegisterConfig(
+                module="what2eat",
+                key="eating_limit",
+                value=3,
+                help="每日吃饭次数限制",
+                default_value=3,
+                type=int,
+            ),
+            RegisterConfig(
+                module="what2eat",
+                key="use_preset_menu",
+                value=True,
+                help="是否使用预设菜单",
+                default_value=True,
+                type=bool,
+            ),
+            RegisterConfig(
+                module="what2eat",
+                key="use_preset_greating",
+                value=True,
+                help="是否使用预设问候语",
+                default_value=True,
+                type=bool,
+            ),
+            RegisterConfig(
+                module="what2eat",
+                key="groups_id",
+                value=[],
+                help="需要发送提醒的群组ID列表",
+                default_value=[],
+                type=list,
+            ),
+        ],
+    ).to_dict(),
 )
-add_greating = on_command(
-    "添加问候", 
-    aliases={"添加问候语"}, 
-    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER, 
-    priority=5, 
-    block=True
+
+RESOURCE_PATH = TEMPLATE_PATH / "what2eat" / "resource"
+
+# 创建命令匹配器
+what2eat_matcher = on_alconna(
+    Alconna(
+        "吃什么",
+        "今天吃什么",
+        "早餐吃什么",
+        "早餐吃啥",
+        "早上吃什么",
+        "早上吃啥",
+        "午餐吃什么",
+        "午餐吃啥",
+        "中午吃什么",
+        "中午吃啥",
+        "晚餐吃什么",
+        "晚餐吃啥",
+        "晚上吃什么",
+        "晚上吃啥",
+        "夜宵吃什么",
+        "夜宵吃啥",
+    ),
+    priority=5,
+    block=True,
 )
-remove_greating = on_command(
-    "删除问候", 
-    aliases={"删除问候语"}, 
-    permission=SUPERUSER, 
-    priority=5, 
-    block=True
+
+menu_matcher = on_alconna(Alconna("群菜单", "查看菜单"), priority=5, block=True)
+
+add_matcher = on_alconna(
+    Alconna("添加", "移除"), priority=5, block=True, permission=SUPERUSER
 )
 
-@plugin_help.handle()
-async def handle_help(bot: Bot):
-    await plugin_help.finish(plugin_notes)
+add_base_matcher = on_alconna(
+    Alconna("加菜"), priority=5, block=True, permission=SUPERUSER
+)
 
-@what2eat.handle()
-async def handle_what2eat(bot: Bot, event: GroupMessageEvent):
-    await what2eat.finish(message=MessageSegment.reply(event.message_id) + eating_manager.get2eat(event))
+base_menu_matcher = on_alconna(
+    Alconna("基础菜单"), priority=5, block=True, permission=SUPERUSER
+)
 
-@switch_greating.handle()
-async def handle_switch_greeting(bot: Bot, event: GroupMessageEvent):
-    action = event.get_plaintext()[:2]
-    msg = meal_reminder.switch_reminder(action == "开启")
-    await switch_greating.finish(msg)
+switch_matcher = on_alconna(
+    Alconna("开启小助手", "关闭小助手"), priority=5, block=True, permission=SUPERUSER
+)
 
-@add_greating.handle()
-async def handle_add_greeting(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
-    args = args.extract_plain_text().strip().split()
-    if not args or len(args) != 2:
-        await add_greating.finish("请输入正确的参数格式：类别 问候语")
-        return
-    await add_greating.finish(eating_manager.add_greating(args))
 
-@remove_greating.handle()
-async def handle_remove_greeting(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
-    args = args.extract_plain_text().strip().split()
-    if not args or len(args) > 1:
-        await remove_greating.finish("请输入删除问候语的类别~")
-        return
-    await remove_greating.finish(eating_manager.remove_greating(args[0]))
+@what2eat_matcher.handle()
+async def _(session: EventSession, arparma: Arparma):
+    """处理吃什么命令"""
+    try:
+        logger.info(f"吃什么命令: {arparma.header_result}")
+        msg = eating_manager.get2eat(session)
+        await MessageUtils.build_message(msg).send(reply_to=True)
+        logger.info("查看今天吃什么", arparma.header_result, session=session)
+    except Exception as e:
+        logger.error(f"获取今天吃什么失败: {e}", arparma.header_result, session=session)
 
-class MealReminderManager:
-    """用于管理定时提醒任务的类"""
-    def __init__(self):
-        self.semaphore = asyncio.Semaphore(3)
-        self.running_tasks: Set[Meals] = set()
-        self.task_locks = {meal: asyncio.Lock() for meal in Meals}
-        self.scheduler = require("nonebot_plugin_apscheduler").scheduler
-        self.is_enabled = True
 
-    async def send_reminder(self, meal_type: Meals) -> None:
-        """发送定时提醒消息"""
-        if not self.is_enabled or meal_type in self.running_tasks:
+@menu_matcher.handle()
+async def _(session: EventSession, arparma: Arparma):
+    """处理菜单命令"""
+    try:
+        msg = eating_manager.get_menu(session)
+        await MessageUtils.build_message(msg).send(reply_to=True)
+        logger.info("查看菜单", arparma.header_result, session=session)
+    except Exception as e:
+        logger.error(f"获取菜单失败: {e}", arparma.header_result, session=session)
+
+
+@add_matcher.handle()
+async def _(session: EventSession, arparma: Arparma):
+    """处理添加/移除命令"""
+    try:
+        action = "添加" if arparma.header_result == "添加" else "移除"
+        args = arparma.args
+        if not args:
+            await MessageUtils.build_message(f"请输入要{action}的菜名").send()
             return
+        msg = eating_manager.add_or_remove_dish(action, args[0])
+        await MessageUtils.build_message(msg).send(reply_to=True)
+        logger.info(f"{action}菜品", arparma.header_result, session=session)
+    except Exception as e:
+        logger.error(f"{action}菜品失败: {e}", arparma.header_result, session=session)
 
-        async with self.semaphore, self.task_locks[meal_type]:
-            try:
-                self.running_tasks.add(meal_type)
-                msg = eating_manager.get2greating(meal_type)
-                if not msg or not config.groups_id:
-                    return
 
-                bot = get_bot()
-                meal_name = MEAL_SCHEDULE[meal_type]['name']
-                failed_groups = []
+@add_base_matcher.handle()
+async def _(session: EventSession, arparma: Arparma):
+    """处理加菜命令"""
+    try:
+        args = arparma.args
+        if not args:
+            await MessageUtils.build_message("请输入要添加的菜名").send()
+            return
+        msg = eating_manager.add_to_base_menu(args[0])
+        await MessageUtils.build_message(msg).send(reply_to=True)
+        logger.info("添加基础菜品", arparma.header_result, session=session)
+    except Exception as e:
+        logger.error(f"添加基础菜品失败: {e}", arparma.header_result, session=session)
 
-                for gid in config.groups_id:
-                    try:
-                        await bot.send_group_msg(group_id=int(gid), message=msg)
-                    except Exception as e:
-                        failed_groups.append(gid)
-                        logger.error(f"发送{meal_name}提醒到群{gid}失败: {str(e)}")
 
-                if failed_groups:
-                    logger.warning(f"{meal_name}提醒发送失败的群: {', '.join(map(str, failed_groups))}")
-                else:
-                    logger.info(f"已成功群发{meal_name}提醒")
+@base_menu_matcher.handle()
+async def _(session: EventSession, arparma: Arparma):
+    """处理基础菜单命令"""
+    try:
+        msg = eating_manager.get_base_menu()
+        await MessageUtils.build_message(msg).send(reply_to=True)
+        logger.info("查看基础菜单", arparma.header_result, session=session)
+    except Exception as e:
+        logger.error(f"获取基础菜单失败: {e}", arparma.header_result, session=session)
 
-            except Exception as e:
-                logger.error(f"{MEAL_SCHEDULE[meal_type]['name']}提醒任务执行失败: {str(e)}")
-            finally:
-                self.running_tasks.discard(meal_type)
 
-    def switch_reminder(self, enable: bool) -> str:
-        """开启或关闭定时提醒"""
-        self.is_enabled = enable
-        status = "开启" if enable else "关闭"
-        return f"已{status}按时吃饭小助手~"
+@switch_matcher.handle()
+async def _(session: EventSession, arparma: Arparma):
+    """处理开启/关闭小助手命令"""
+    try:
+        action = "开启" if arparma.header_result == "开启小助手" else "关闭"
+        msg = meal_reminder.switch_reminder(action == "开启")
+        await MessageUtils.build_message(msg).send(reply_to=True)
+        logger.info(f"{action}小助手", arparma.header_result, session=session)
+    except Exception as e:
+        logger.error(f"{action}小助手失败: {e}", arparma.header_result, session=session)
 
-    def register_schedules(self) -> None:
-        """注册所有定时任务"""
-        for meal_type, cfg in MEAL_SCHEDULE.items():
-            self.scheduler.add_job(
-                self.send_reminder,
-                "cron",
-                args=[meal_type],
-                hour=cfg["hour"],
-                minute=0,
-                id=f"meal_reminder_{meal_type}"
-            )
 
-# 创建全局实例
-meal_reminder = MealReminderManager()
-meal_reminder.register_schedules()
+class MyPluginInit(PluginInit):
+    async def install(self):
+        res = Path(__file__).parent / "what2eat"
+        if res.exists():
+            if RESOURCE_PATH.exists():
+                shutil.rmtree(RESOURCE_PATH)
+            shutil.move(res, RESOURCE_PATH)
+            logger.info(f"移动 吃饭小助手 资源文件夹成功 {res} -> {RESOURCE_PATH}")
+
+        # 注册定时任务
+        try:
+            for meal_type, cfg in MEAL_SCHEDULE.items():
+                job_id = f"meal_reminder_{meal_type}"
+                # 检查任务是否已存在
+                if scheduler.get_job(job_id):
+                    scheduler.remove_job(job_id)
+                scheduler.add_job(
+                    meal_reminder.send_reminder,
+                    "cron",
+                    args=[meal_type],
+                    hour=cfg["hour"],
+                    minute=0,
+                    id=job_id,
+                )
+            logger.info("成功注册吃饭提醒定时任务")
+        except Exception as e:
+            logger.error(f"注册吃饭提醒定时任务失败: {str(e)}")
+
+    async def remove(self):
+        if RESOURCE_PATH.exists():
+            shutil.rmtree(RESOURCE_PATH)
+            logger.info(f"删除 吃饭小助手 资源文件夹成功 {RESOURCE_PATH}")
+
+        # 移除定时任务
+        try:
+            for meal_type in Meals:
+                job_id = f"meal_reminder_{meal_type}"
+                if scheduler.get_job(job_id):
+                    scheduler.remove_job(job_id)
+            logger.info("成功移除吃饭提醒定时任务")
+        except Exception as e:
+            logger.error(f"移除吃饭提醒定时任务失败: {str(e)}")
