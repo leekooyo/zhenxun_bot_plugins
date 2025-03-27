@@ -37,7 +37,7 @@ from .data_source import (
     get_media_id,
     get_sub_status,
 )
-from .utils import calc_time_total
+from .utils import format_duration
 
 base_config = Config.get("bilibili_sub")
 
@@ -407,8 +407,8 @@ async def _():
         await MessageUtils.build_message("没有缓存的登录信息").finish()
     msgs = []
     for auth in AuthManager.grpc_auths:
-        token_time = calc_time_total(auth.tokens_expired - int(time.time()))
-        cookie_time = calc_time_total(auth.cookies_expired - int(time.time()))
+        token_time = format_duration(auth.tokens_expired - int(time.time()))
+        cookie_time = format_duration(auth.cookies_expired - int(time.time()))
         msg = (
             f"账号uid: {auth.uid}\n"
             f"token有效期: {token_time}\n"
@@ -461,7 +461,7 @@ semaphore = asyncio.Semaphore(150)
 
 @scheduler.scheduled_job(
     "interval",
-    seconds=4,
+    seconds=1,
     misfire_grace_time=30,
     max_instances=100,
     coalesce=True,
@@ -473,9 +473,9 @@ async def check_subscriptions():
     """
     try:
         async with semaphore:
-            # 检查是否在休眠时间
-            if base_config.get("ENABLE_SLEEP_MODE") and not should_run():
-                return
+            # # 检查是否在休眠时间
+            # if base_config.get("ENABLE_SLEEP_MODE") and not should_run():
+            #     return
 
             # 获取可用的机器人
             bots = nonebot.get_bots()
@@ -498,6 +498,7 @@ async def check_subscriptions():
             for bot in bots.values():
                 if bot:
                     try:
+                        logger.info(f"处理订阅 {sub.sub_id} 开始")  
                         await asyncio.wait_for(process_single_subscription(bot, sub), timeout=30)
                     except asyncio.TimeoutError:
                         logger.error(f"处理订阅 {sub.sub_id} 超时，跳过当前订阅")

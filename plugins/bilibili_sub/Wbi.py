@@ -10,6 +10,8 @@ import urllib.parse
 from typing import Any, TypedDict
 
 from httpx import AsyncClient  # type: ignore
+import aiohttp
+from zhenxun.services.log import logger
 
 
 class WbiImg(TypedDict):
@@ -22,19 +24,47 @@ dm_img_str_cache: str = base64.b64encode("".join(random.choices(string.printable
 dm_cover_img_str_cache: str = base64.b64encode("".join(random.choices(string.printable, k=random.randint(32, 128))).encode())[:-2].decode()  # fmt: skip
 
 
-async def get_wbi_img(client: AsyncClient) -> WbiImg:
+async def get_wbi_img(session: aiohttp.ClientSession | AsyncClient, proxy_url: str) -> WbiImg:
+    """
+    获取 wbi 验证信息
+    :param session: aiohttp.ClientSession 或 httpx.AsyncClient
+    :param proxy_url: 代理地址
+    :return: WbiImg
+    """
     global wbi_img_cache
     if wbi_img_cache is not None:
         return wbi_img_cache
+        
     url = "https://api.bilibili.com/x/web-interface/nav"
-    res_json = (await client.get(url)).json()
-    assert res_json is not None
-    wbi_img: WbiImg = {
-        "img_key": _get_key_from_url(res_json["data"]["wbi_img"]["img_url"]),
-        "sub_key": _get_key_from_url(res_json["data"]["wbi_img"]["sub_url"]),
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Origin": "https://www.bilibili.com",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site"
     }
-    wbi_img_cache = wbi_img
-    return wbi_img
+    
+    try:
+        if isinstance(session, aiohttp.ClientSession):
+            async with session.get(url, headers=headers, proxy=proxy_url) as response:
+                res_json = await response.json()
+        else:
+            res_json = (await session.get(url, headers=headers, proxy=proxy_url)).json()
+            
+        assert res_json is not None
+        wbi_img: WbiImg = {
+            "img_key": _get_key_from_url(res_json["data"]["wbi_img"]["img_url"]),
+            "sub_key": _get_key_from_url(res_json["data"]["wbi_img"]["sub_url"]),
+        }
+        wbi_img_cache = wbi_img
+        return wbi_img
+        
+    except Exception as e:
+        logger.warning(f"获取 wbi 验证信息失败: {str(e)[:50]}...")
+        raise
 
 
 def _get_key_from_url(url: str) -> str:
