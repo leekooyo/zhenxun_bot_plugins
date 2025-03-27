@@ -1,91 +1,103 @@
 from datetime import date, timedelta
+from typing import List, Tuple, Dict
 
 import chinese_calendar as calendar
 import lunardate
 
-# 定义2025年农历节日的农历日期
-lunar_festivals = {
-    "春节": (1, 1),  # 春节 (农历正月初一)
-    "端午节": (5, 5),  # 端午节 (农历五月初五)
-    "中秋节": (8, 15),  # 中秋节 (农历八月十五)
-}
-
-# 固定日期的节日
-fixed_festivals_dates = {
-    "劳动节": date(2025, 5, 1),  # 劳动节
-    "国庆节": date(2025, 10, 1),  # 国庆节
-    "元旦": date(2025, 1, 1),  # 元旦
-}
-
-
-def get_next_year_festival_date(
-    festival_name: str, current_festival_date: date
-) -> date:
-    """获取下一个该节日的日期"""
-    if festival_name not in lunar_festivals:
-        # 对于固定日期的节日，直接增加一年
-        return current_festival_date.replace(year=current_festival_date.year + 1)
-
-    # 对于农历节日，使用lunardate库转换为下一年的公历日期
-    next_year = current_festival_date.year + 1
-    month, day = lunar_festivals[festival_name]
-    return lunardate.LunarDate(next_year, month, day).toSolarDate()
-
-
-def find_tomb_sweeping_day(year: int) -> date:
-    # 春分通常在3月20日或21日
-    start_date = date(year, 3, 20)
-
-    # 查找春分的确切日期
-    spring_equinox = next(
-        (
-            start_date + timedelta(days=i)
-            for i in range(3)
-            if calendar.get_holiday_detail(start_date + timedelta(days=i))[1] == "春分"
-        ),
-        start_date,
-    )
-    return spring_equinox + timedelta(days=15)
-
-
-def days_until_festival(festival_name: str, today: date, festival_date: date) -> int:
-    if festival_date < today:
-        # 如果节日已经过去，计算下一个该节日的到来时间
-        next_festival_date = get_next_year_festival_date(festival_name, festival_date)
-        delta = next_festival_date - today
-    else:
-        delta = festival_date - today
-
-    return delta.days
-
-
-# 获取农历节日对应的公历日期
-def get_lunar_festivals_dates(today: date):
-    year = today.year
-    return {
-        name: lunardate.LunarDate(year, month, day).toSolarDate()
-        for name, (month, day) in lunar_festivals.items()
+class FestivalManager:
+    """节日管理器"""
+    # 农历节日配置
+    LUNAR_FESTIVALS: Dict[str, Tuple[int, int]] = {
+        "春节": (1, 1),
+        "端午节": (5, 5),
+        "中秋节": (8, 15),
     }
 
+    # 固定日期节日配置
+    FIXED_FESTIVALS: Dict[str, Tuple[int, int]] = {
+        "劳动节": (5, 1),
+        "国庆节": (10, 1),
+        "元旦": (1, 1),
+    }
 
-def get_festivals_dates() -> list[tuple[int, str]]:
-    today = date.today()
-    lunar_festivals_dates = get_lunar_festivals_dates(today)
-    # 添加清明节到节日字典中
-    lunar_festivals_dates["清明节"] = find_tomb_sweeping_day(today.year)
+    @staticmethod
+    def get_lunar_date(year: int, month: int, day: int) -> date:
+        """获取农历日期对应的公历日期"""
+        return lunardate.LunarDate(year, month, day).toSolarDate()
 
-    # 合并两个字典
-    festivals_dates = {**lunar_festivals_dates, **fixed_festivals_dates}
+    @staticmethod
+    def get_spring_equinox(year: int) -> date:
+        """获取春分日期"""
+        start_date = date(year, 3, 20)
+        return next(
+            (start_date + timedelta(days=i) for i in range(3)
+             if calendar.get_holiday_detail(start_date + timedelta(days=i))[1] == "春分"),
+            start_date
+        )
 
-    sort_name = ["春节", "端午节", "中秋节", "清明节", "劳动节", "国庆节", "元旦"]
+    @staticmethod
+    def get_tomb_sweeping_day(year: int) -> date:
+        """获取清明节日期"""
+        return FestivalManager.get_spring_equinox(year) + timedelta(days=15)
 
-    # 计算到每个节日的天数，并检查是否为法定假日
-    data_list = []
-    for name in sort_name:
-        if name in festivals_dates:
-            days_left = days_until_festival(name, today, festivals_dates[name])
-            data_list.append((days_left, name))
-        else:
-            data_list.append((-1, name))
-    data_list.sort(key=lambda x: x[0])
-    return data_list
+    @classmethod
+    def get_next_festival_date(cls, festival_name: str, current_date: date) -> date:
+        """获取下一个节日日期"""
+        if festival_name in cls.LUNAR_FESTIVALS:
+            month, day = cls.LUNAR_FESTIVALS[festival_name]
+            next_year = current_date.year + 1
+            return cls.get_lunar_date(next_year, month, day)
+        
+        if festival_name in cls.FIXED_FESTIVALS:
+            month, day = cls.FIXED_FESTIVALS[festival_name]
+            return current_date.replace(year=current_date.year + 1, month=month, day=day)
+        
+        if festival_name == "清明节":
+            return cls.get_tomb_sweeping_day(current_date.year + 1)
+        
+        raise ValueError(f"未知的节日: {festival_name}")
+
+    @classmethod
+    def get_days_until_festival(cls, festival_name: str, today: date, festival_date: date) -> int:
+        """计算距离节日的天数"""
+        if festival_date < today:
+            next_date = cls.get_next_festival_date(festival_name, festival_date)
+            return (next_date - today).days
+        return (festival_date - today).days
+
+    @classmethod
+    def get_all_festival_dates(cls, today: date) -> List[Tuple[int, str]]:
+        """获取所有节日日期"""
+        # 获取农历节日日期
+        lunar_dates = {
+            name: cls.get_lunar_date(today.year, month, day)
+            for name, (month, day) in cls.LUNAR_FESTIVALS.items()
+        }
+        
+        # 获取固定日期节日
+        fixed_dates = {
+            name: date(today.year, month, day)
+            for name, (month, day) in cls.FIXED_FESTIVALS.items()
+        }
+        
+        # 添加清明节
+        lunar_dates["清明节"] = cls.get_tomb_sweeping_day(today.year)
+        
+        # 合并所有节日日期
+        all_dates = {**lunar_dates, **fixed_dates}
+        
+        # 按优先级排序的节日名称
+        priority_order = ["春节", "端午节", "中秋节", "清明节", "劳动节", "国庆节", "元旦"]
+        
+        # 计算并排序节日
+        festival_days = [
+            (cls.get_days_until_festival(name, today, date), name)
+            for name in priority_order
+            if name in all_dates
+        ]
+        
+        return sorted(festival_days, key=lambda x: x[0])
+
+def get_festivals_dates() -> List[Tuple[int, str]]:
+    """获取节日日期列表"""
+    return FestivalManager.get_all_festival_dates(date.today())
