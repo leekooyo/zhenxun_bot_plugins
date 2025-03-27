@@ -166,7 +166,7 @@ class ReportGenerator:
 
 class MessageSender:
     """消息发送器"""
-    def __init__(self, interval: int = 60):
+    def __init__(self, interval: int = 5):
         self.interval = interval
         
     async def send_to_group(self, bot: Bot, group_id: str, message) -> BroadcastResult:
