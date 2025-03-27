@@ -1,11 +1,3 @@
-'''
-Author: xx
-Date: 2025-03-22 15:36:23
-LastEditors: Do not edit
-LastEditTime: 2025-03-24 22:43:53
-Description: 
-FilePath: \zhenxun\zhenxun_bot\zhenxun\plugins\parse_bilibili\parse_url.py
-'''
 import re
 from typing import Dict
 import aiohttp
@@ -15,9 +7,19 @@ from zhenxun.utils.user_agent import get_user_agent
 from .get_image import get_image
 from .information_container import InformationContainer
 
+
 def clean_url(url: str) -> str:
     """清理和标准化 URL"""
-    return url.rstrip("/").split("?")[0]
+    # 移除URL参数和末尾斜杠
+    url = url.split("?")[0].rstrip("/")
+    # 确保URL格式正确
+    if "live.bilibili.com" in url:
+        # 确保直播URL格式为 https://live.bilibili.com/房间号
+        match = re.search(r"live\.bilibili\.com/(\d+)", url)
+        if match:
+            return f"https://live.bilibili.com/{match.group(1)}"
+    return url
+
 
 async def get_redirected_url(url: str) -> str:
     """获取重定向后的 URL"""
@@ -28,46 +30,66 @@ async def get_redirected_url(url: str) -> str:
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             raise ValueError(f"获取 URL 失败: {e}")
 
+
 def extract_video_id(url: str) -> str:
     """从视频URL中提取视频ID"""
-    # 处理 BV号和av号
-    if match := re.search(r'/video/(?:av|AV)?([A-Za-z0-9]+)', url, re.IGNORECASE):
+    if match := re.search(r"/video/(?:av|AV)?([A-Za-z0-9]+)", url, re.IGNORECASE):
         return match.group(1)
     return url.split("/")[-1]
 
-async def parse_bili_url(get_url: str, information_container: InformationContainer) -> Dict:
+
+def extract_live_id(url: str) -> str:
+    """从直播URL中提取房间号"""
+    if match := re.search(r"live\.bilibili\.com/(\d+)", url):
+        return match.group(1)
+    return url.split("/")[-1]
+
+
+async def parse_video(url: str, information_container: InformationContainer) -> None:
+    """解析视频信息"""
+    vid = extract_video_id(url)
+    try:
+        vd_info = await video.get_video_base_info(vid)
+        information_container.update({"vd_info": vd_info, "vd_url": url})
+    except Exception as e:
+        raise ValueError(f"获取视频信息失败: {str(e)}")
+
+
+async def parse_live(url: str, information_container: InformationContainer) -> None:
+    """解析直播信息"""
+    rid = extract_live_id(url)
+    try:
+        live_info = await live.get_room_info_by_id(rid)
+        information_container.update({"live_info": live_info, "live_url": url})
+    except Exception as e:
+        raise ValueError(f"获取直播间信息失败: {str(e)}")
+
+
+async def parse_article(url: str, information_container: InformationContainer) -> None:
+    """解析文章和动态信息"""
+    try:
+        image_info = await get_image(url)
+        information_container.update({"image_info": image_info, "image_url": url})
+    except Exception as e:
+        raise ValueError(f"获取图片信息失败: {str(e)}")
+
+
+async def parse_bili_url(
+    get_url: str, information_container: InformationContainer
+) -> Dict:
     """解析 Bilibili 链接，获取相关信息"""
     try:
         # 获取并清理 URL
         url = clean_url(get_url)
         response_url = await get_redirected_url(url)
 
-        # 视频链接处理
+        # 根据URL类型进行解析
         if "/video/" in response_url:
-            vid = extract_video_id(response_url)
-            try:
-                vd_info = await video.get_video_base_info(vid)
-                information_container.update({"vd_info": vd_info, "vd_url": response_url})
-            except Exception as e:
-                raise ValueError(f"获取视频信息失败: {str(e)}")
-
-        # 直播链接处理
+            await parse_video(response_url, information_container)
         elif "live.bilibili.com" in response_url:
-            rid = response_url.split("/")[-1]
-            try:
-                live_info = await live.get_room_info_by_id(rid)
-                information_container.update({"live_info": live_info, "live_url": response_url})
-            except Exception as e:
-                raise ValueError(f"获取直播间信息失败: {str(e)}")
-
-        # 文章和动态链接处理
+            await parse_live(response_url, information_container)
         elif any(x in response_url for x in ["/read/", "/opus/", "t.bilibili.com"]):
-            try:
-                image_info = await get_image(response_url)
-                information_container.update({"image_info": image_info, "image_url": response_url})
-            except Exception as e:
-                raise ValueError(f"获取图片信息失败: {str(e)}")
-
+            await parse_article(response_url, information_container)
         else:
             raise ValueError(f"不支持的URL类型: {response_url}")
 

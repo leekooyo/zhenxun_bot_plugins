@@ -1,12 +1,11 @@
-import re
 import time
 
+import ujson as json
 from nonebot import on_message
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Hyper, Image, UniMsg
 from nonebot_plugin_session import EventSession
 from nonebot_plugin_uninfo import Uninfo
-import ujson as json
 
 from zhenxun.configs.path_config import TEMP_PATH
 from zhenxun.configs.utils import PluginExtraData, RegisterConfig, Task
@@ -16,8 +15,11 @@ from zhenxun.utils.enum import PluginType
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.message import MessageUtils
 
+from .config import REPEAT_THRESHOLD
 from .information_container import InformationContainer
+from .message_handler import MessageHandler
 from .parse_url import parse_bili_url
+from .url_parser import URLParser
 
 __plugin_meta__ = PluginMetadata(
     name="B站内容解析",
@@ -59,91 +61,41 @@ _tmp = {}
 async def _(session: EventSession, message: UniMsg):
     try:
         information_container = InformationContainer()
-        # 判断文本消息内容是否相关
-        match = None
-        # 判断文本消息和小程序的内容是否指向一个b站链接
+        message_handler = MessageHandler(session)
+
+        # 获取URL
         get_url = None
-        # 判断文本消息是否包含视频相关内容
-        vd_flag = False
-        # 尝试解析小程序消息
         data = message[0]
+
+        # 尝试解析小程序消息
         if isinstance(data, Hyper) and data.raw:
             try:
                 data = json.loads(data.raw)
+                get_url = URLParser.parse_miniapp(data)
             except (IndexError, KeyError):
-                data = None
-            if data:
-                if data.get("app") == "com.tencent.qun.invite":
-                    return
-                # 获取相关数据
-                meta_data = data.get("meta", {})
-                news_value = meta_data.get("news", {})
-                detail_1_value = meta_data.get("detail_1", {})
-                qqdocurl_value = detail_1_value.get("qqdocurl", {})
-                jumpUrl_value = news_value.get("jumpUrl", {})
-                get_url = (qqdocurl_value if qqdocurl_value else jumpUrl_value).split("?")[
-                    0
-                ]
+                pass
+
         # 解析文本消息
-        elif msg := message.extract_plain_text():
-            # 消息中含有视频号
-            if "bv" in msg.lower() or "av" in msg.lower():
-                match = re.search(r"((?=(?:bv|av))([A-Za-z0-9]+))", msg, re.IGNORECASE)
-                vd_flag = True
-
-            # 消息中含有b23的链接，包括视频、专栏、动态、直播
-            elif "https://b23.tv" in msg:
-                match = re.search(r"https://b23\.tv/[^?\s]+", msg, re.IGNORECASE)
-
-            # 检查消息中是否含有直播、专栏、动态链接
-            elif any(
-                keyword in msg
-                for keyword in [
-                    "https://live.bilibili.com/",
-                    "https://www.bilibili.com/read/",
-                    "https://www.bilibili.com/opus/",
-                    "https://t.bilibili.com/",
-                ]
-            ):
-                pattern = r"https://(live|www\.bilibili\.com/read|www\.bilibili\.com/opus|t\.bilibili\.com)/[^?\s]+"
-                match = re.search(pattern, msg)
-
-        if match:
-            if vd_flag:
-                number = match.group(1)
-                get_url = f"https://www.bilibili.com/video/{number}"
-            else:
-                get_url = match.group()
+        if not get_url and (msg := message.extract_plain_text()):
+            get_url = URLParser.parse_message(msg)
 
         if get_url:
-            # 将链接统一发送给处理函数
             try:
                 data = await parse_bili_url(get_url, information_container)
-                # 设定时间阈值，阈值之下不会解析重复内容
-                repet_second = 5
-                if data.vd_info:
-                    # 判断一定时间内是否解析重复内容，或者是第一次解析
-                    if (
-                        data.vd_url in _tmp.keys()
-                        and time.time() - _tmp[data.vd_url] > repet_second
-                    ) or data.vd_url not in _tmp.keys():
-                        await _handle_video_info(data, session)
 
-                elif data.live_info:
-                    if (
-                        data.live_url in _tmp.keys()
-                        and time.time() - _tmp[data.live_url] > repet_second
-                    ) or data.live_url not in _tmp.keys():
-                        await _handle_live_info(data, session)
-                elif data.image_info:
-                    if (
-                        data.image_url in _tmp.keys()
-                        and time.time() - _tmp[data.image_url] > repet_second
-                    ) or data.image_url not in _tmp.keys():
-                        await _handle_image_info(data, session)
-            except ValueError:
+                # 处理不同类型的内容
+                if data.vd_info and not message_handler.is_repeat(data.vd_url):
+                    await message_handler.handle_video_info(data)
+                elif data.live_info and not message_handler.is_repeat(data.live_url):
+                    await message_handler.handle_live_info(data)
+                elif data.image_info and not message_handler.is_repeat(data.image_url):
+                    await message_handler.handle_image_info(data)
+
+            except ValueError as e:
+                logger.warning(f"解析B站链接失败: {str(e)}")
                 # 静默处理解析失败的情况
                 pass
+
     except Exception as e:
         logger.debug(f"B站解析插件发生错误: {str(e)}")
 
@@ -154,13 +106,13 @@ async def _handle_video_info(data, session):
     pic = vd_info.get("pic", "")
     aid = vd_info.get("aid", "")
     stats = vd_info.get("stat", {})
-    
+
     logger.info(f"解析bilibili转发 {data.vd_url}", "b站解析", session=session)
     _tmp[data.vd_url] = time.time()
-    
+
     _path = TEMP_PATH / f"{aid}.jpg"
     await AsyncHttpx.download_file(pic, _path)
-    
+
     message = [
         _path,
         f"av{aid}\n"
@@ -169,17 +121,18 @@ async def _handle_video_info(data, session):
         f"上传日期：{time.strftime('%Y-%m-%d', time.localtime(vd_info['ctime']))}\n"
         f"回复：{stats.get('reply', '')}，收藏：{stats.get('favorite', '')}，投币：{stats.get('coin', '')}\n"
         f"点赞：{stats.get('like', '')}，弹幕：{stats.get('danmaku', '')}\n"
-        f"{data.vd_url}"
+        f"{data.vd_url}",
     ]
-    
+
     await MessageUtils.build_message(message).send()
+
 
 async def _handle_live_info(data, session):
     """处理直播信息"""
     live_info = data.live_info
     logger.info(f"解析bilibili转发 {data.live_url}", "b站解析", session=session)
     _tmp[data.live_url] = time.time()
-    
+
     message = [
         Image(url=live_info.get("user_cover", "")),
         f"开播用户：https://space.bilibili.com/{live_info.get('uid', '')}\n"
@@ -189,10 +142,11 @@ async def _handle_live_info(data, session):
         f"简介：{live_info.get('description', '')}\n"
         f"直播截图：\n",
         Image(url=live_info.get("keyframe", "")),
-        f"{data.live_url}"
+        f"{data.live_url}",
     ]
-    
+
     await MessageUtils.build_message(message).send()
+
 
 async def _handle_image_info(data, session):
     """处理图片信息"""
