@@ -14,10 +14,17 @@ from zhenxun.utils._build_image import BuildImage
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.utils import ResourceDirManager
-from .utils import BiliClient
 
 from .filter import check_page_elements
 from .model import BilibiliSub
+from .utils import (
+    get_dynamic_screenshot,
+    get_meta,
+    get_room_info_by_id,
+    get_user_card,
+    get_user_dynamics,
+    get_videos,
+)
 
 base_config = Config.get("bilibili_sub")
 
@@ -37,6 +44,29 @@ async def fetch_image_bytes(url: str) -> bytes:
         return response.content
 
 
+async def handle_video_info_error(video_info: dict):
+    """
+
+    处理B站视频信息获取错误并发送通知给超级用户
+    :param video_info: 包含错误信息的字典
+    :param platform_utils: 用于发送消息的工具类
+    """
+    str_msg = "b站订阅检测失败："
+    if video_info["code"] == -352:
+        str_msg += "风控校验失败，请登录后再尝试。发送'登录b站'"
+    elif video_info["code"] == -799:
+        str_msg += "请求过于频繁，请增加时长，更改配置文件下的'CHECK_TIME''"
+    else:
+        str_msg += f"{video_info['code']}，{video_info['message']}"
+
+    bots = nonebot.get_bots()
+    for bot in bots.values():
+        if bot:
+            await PlatformUtils.send_superuser(bot, str_msg)
+
+    return str_msg
+
+
 async def add_live_sub(live_id: int, sub_user: str) -> str:
     """
 
@@ -47,7 +77,8 @@ async def add_live_sub(live_id: int, sub_user: str) -> str:
     """
     try:
         try:
-            live_info = await BiliClient.get_room_info(live_id)
+            """bilibili_api.live库的LiveRoom类中get_room_info改为bilireq.live库的get_room_info_by_id方法"""
+            live_info = await get_room_info_by_id(live_id)
         except ResponseCodeError:
             return f"未找到房间号Id：{live_id} 的信息，请检查Id是否正确"
         uid = live_info["uid"]
@@ -89,12 +120,13 @@ async def add_up_sub(uid: int, sub_user: str) -> str:
     """
     try:
         try:
-            user_info = await BiliClient.get_user_card(uid)
+            """bilibili_api.user库中User类的get_user_info改为bilireq.user库的get_user_info方法"""
+            user_info = await get_user_card(uid)
         except ResponseCodeError:
             return f"未找到UpId：{uid} 的信息，请检查Id是否正确"
         uname = user_info["name"]
         try:
-            dynamic_info = await BiliClient.get_user_dynamics(uid)
+            dynamic_info = await get_user_dynamics(uid)
         except ResponseCodeError as e:
             if e.code == -352:
                 return "风控校验失败，请联系管理员登录b站'"
@@ -102,8 +134,10 @@ async def add_up_sub(uid: int, sub_user: str) -> str:
         dynamic_upload_time = 0
         if dynamic_info.get("cards"):
             dynamic_upload_time = dynamic_info["cards"][0]["desc"]["timestamp"]
-        video_info = await BiliClient.get_videos(uid)
+        """bilibili_api.user库中User类的get_videos改为bilireq.user库的get_videos方法"""
+        video_info = await get_videos(uid)
         if not video_info.get("data"):
+            await handle_video_info_error(video_info)
             return "订阅失败，请联系管理员"
         else:
             video_info = video_info["data"]
@@ -135,7 +169,8 @@ async def add_season_sub(media_id: int, sub_user: str) -> str:
     """
     try:
         try:
-            season_info = await BiliClient.get_meta(media_id)
+            """bilibili_api.bangumi库中get_meta改为bilireq.bangumi库的get_meta方法"""
+            season_info = await get_meta(media_id)
         except ResponseCodeError:
             return f"未找到media_id：{media_id} 的信息，请检查Id是否正确"
         season_id = season_info["media"]["season_id"]
@@ -226,8 +261,12 @@ async def get_sub_status(id_: int, sub_type: str) -> list | None:
 
 
 async def _get_live_status(id_: int) -> list:
-    """获取直播订阅状态"""
-    live_info = await BiliClient.get_room_info(id_)
+    """
+    获取直播订阅状态
+    :param id_: 直播间 id
+    """
+    """bilibili_api.live库的LiveRoom类中get_room_info改为bilireq.live库的get_room_info_by_id方法"""
+    live_info = await get_room_info_by_id(id_)
     title = live_info["title"]
     room_id = live_info["room_id"]
     live_status = live_info["live_status"]
@@ -278,9 +317,10 @@ async def _get_up_status(id_: int) -> list:
 
     # 获取用户信息和视频信息
     try:
-        user_info = await BiliClient.get_user_card(_user.uid)
-        video_info = await BiliClient.get_videos(_user.uid)
+        user_info = await get_user_card(_user.uid)
+        video_info = await get_videos(_user.uid)
         if not video_info.get("data"):
+            await handle_video_info_error(video_info)
             return []
     except ResponseCodeError as e:
         logger.error(f"获取用户信息失败: {e}")
@@ -313,16 +353,13 @@ async def _get_up_status(id_: int) -> list:
     )
 
     # 处理视频更新
-    try:
-        if video_info["data"]["list"].get("vlist"):
-            video = video_info["data"]["list"]["vlist"][0]
-            msg_list.extend(
-                await _handle_video_update(
-                    _user, video, time_threshold, msg_list, dividing_line
-                )
+    if video_info["data"]["list"].get("vlist"):
+        video = video_info["data"]["list"]["vlist"][0]
+        msg_list.extend(
+            await _handle_video_update(
+                _user, video, time_threshold, msg_list, dividing_line
             )
-    except Exception as e:
-        logger.error(f"处理视频更新失败: {video_info}")
+        )
 
     return msg_list
 
@@ -398,8 +435,12 @@ async def _get_video_cover(pic_url: str) -> BuildImage | None:
 
 
 async def _get_season_status(id_) -> list:
-    """获取番剧更新状态"""
-    season_info = await BiliClient.get_meta(id_)
+    """
+    获取 番剧 更新状态
+    :param id_: 番剧 id
+    """
+    """bilibili_api.bangumi库中get_meta改为bilireq.bangumi库的get_meta方法"""
+    season_info = await get_meta(id_)
     title = season_info["media"]["title"]
     sub = await BilibiliSub.get_or_none(sub_id=id_)
     if not sub:
@@ -439,7 +480,7 @@ async def get_user_dynamic(
     :return: 最新动态截图与时间
     """
     try:
-        dynamic_info = await BiliClient.get_user_dynamics(uid)
+        dynamic_info = await get_user_dynamics(uid)
         if not dynamic_info or not dynamic_info.get("cards"):
             return None, 0, ""
 
@@ -452,7 +493,7 @@ async def get_user_dynamic(
             return None, 0, ""
 
         # 获取动态截图
-        image = await BiliClient.get_dynamic_screenshot(dynamic_id)
+        image = await get_dynamic_screenshot(dynamic_id)
         return image, dynamic_upload_time, f"https://t.bilibili.com/{dynamic_id}"
 
     except Exception as e:
