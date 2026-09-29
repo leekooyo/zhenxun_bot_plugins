@@ -18,7 +18,6 @@ from nonebot_plugin_alconna.builtins.extensions.reply import ReplyMergeExtension
 from nonebot_plugin_alconna.uniseg.tools import image_fetch
 from nonebot_plugin_uninfo import Uninfo
 from nonebot_plugin_waiter import waiter
-
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import Command, PluginExtraData
 from zhenxun.services.log import logger
@@ -33,10 +32,10 @@ __plugin_meta__ = PluginMetadata(
     description="动漫以及gal游戏的角色识别",
     usage="""
     指令：
-        角色识别 ?[-t [1, 2, 3, 4](识别类型，默认1)] [图片]
+        角色识别 ?[-t [1, 2, 3, 4](识别类型，默认2)] [图片]
 
-        1: 高级动画识别模型①（默认）
-        2: 高级动画识别模型②
+        1: 高级动画识别模型①
+        2: 高级动画识别模型②（默认）
         3: 普通动画识别模型
         4: 高级Gal识别模型
 
@@ -53,7 +52,7 @@ __plugin_meta__ = PluginMetadata(
         version="0.3",
         menu_type="一些工具",
         commands=[
-            Command(command="角色识别 ?[-t [1, 2, 3, 4](识别类型，默认1)] [图片]")
+            Command(command="角色识别 ?[-t [1, 2, 3, 4](识别类型，默认2)] [图片]")
         ],
     ).to_dict(),
 )
@@ -95,7 +94,7 @@ async def _(
     data: Match[Image | At],
     arparma: Arparma,
     session: Uninfo,
-    search_type: Query[int] = Query("search_type", 1),
+    search_type: Query[int] = Query("search_type", 2),
 ):
     if search_type.result not in [1, 2, 3, 4]:
         await MessageUtils.build_message("识别类型错误，请输入1-4...").finish()

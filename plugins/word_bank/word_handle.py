@@ -20,7 +20,6 @@ from nonebot_plugin_alconna import (
 )
 from nonebot_plugin_alconna import Image as alcImage
 from nonebot_plugin_uninfo import Uninfo
-
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.services.log import logger
@@ -80,7 +79,7 @@ __plugin_meta__ = PluginMetadata(
                     查看词条 --id 2    : 查看词条序号为2的全部回答
                     查看词条 谁是萝莉 --all: 查看全局词条 谁是萝莉 的全部回答
                     查看词条 --id 2 --all: 查看全局词条序号为2的全部回答
-    """.strip(),  # noqa: E501
+    """.strip(),
     extra=PluginExtraData(
         author="HibiKier & yajiwa",
         version="0.1",
@@ -97,11 +96,11 @@ __plugin_meta__ = PluginMetadata(
             示例:
                 删除词条 --id 2 --all: 删除全局词条中序号为2的词条
             用法与普通用法相同
-            
+
             词条导入指令:
                 词条导入 [文件名称]: 私聊时词条范围为私聊，群组中时词条范围为当前群组
                 全局词条导入 [文件名称]: 导入全局词条
-            
+
             词条文件应放入 data 目录下，为json文件
             json文件格式为:
                 {
@@ -111,7 +110,7 @@ __plugin_meta__ = PluginMetadata(
             指令:
                 词条导入 test
                 词条导入 test.json
-            
+
         """,
         admin_level=base_config.get("WORD_BANK_LEVEL"),
     ).to_dict(),

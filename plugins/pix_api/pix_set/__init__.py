@@ -15,7 +15,6 @@ from nonebot_plugin_alconna import (
 from nonebot_plugin_alconna.uniseg.tools import reply_fetch
 from nonebot_plugin_apscheduler import scheduler
 from nonebot_plugin_uninfo import Uninfo
-
 from zhenxun.configs.utils import Command, PluginExtraData
 from zhenxun.services.log import logger
 from zhenxun.utils.message import MessageUtils
@@ -71,7 +70,7 @@ _block_matcher = on_alconna(
     Alconna(
         ["/"],
         "block",
-        Args["level?", [1, 2]],
+        Args["level?", ["1", "2"]],
         Option("-u|--uid", action=store_true, help_text="是否是uid"),
         Option("--all", action=store_true, help_text="全部"),
     ),
@@ -96,13 +95,13 @@ async def _(
     event: Event,
     arparma: Arparma,
     session: Uninfo,
-    level: Query[int] = Query("level", 2),
+    level: Query[str] = Query("level", "2"),
 ):
     reply: Reply | None = await reply_fetch(event, bot)
     if reply and (pix_model := InfoManage.get(str(reply.id))):
         try:
             result = await PixManage.block_pix(
-                pix_model, level.result, arparma.find("uid"), arparma.find("all")
+                pix_model, int(level.result), arparma.find("uid"), arparma.find("all")
             )
         except HTTPStatusError as e:
             logger.error(

@@ -14,7 +14,6 @@ from nonebot_plugin_alconna import (
 )
 from nonebot_plugin_alconna.uniseg.tools import reply_fetch
 from nonebot_plugin_uninfo import Uninfo
-
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import Command, PluginExtraData
 from zhenxun.services.log import logger
@@ -166,8 +165,10 @@ async def _(session: Uninfo, arparma: Arparma):
 
 @_rank_matcher.handle()
 async def _(session: Uninfo, arparma: Arparma, num: Query[int] = Query("num", 10)):
+    if not 1 <= num.result <= 30:
+        await MessageUtils.build_message("排行数量必须在 1 到 30 之间...").finish()
     try:
-        result_list = await StarManage.star_rank(num.result, arparma.find("r18"))
+        result_list = await StarManage.star_rank(num.result, bool(arparma.find("r18")))
     except HTTPStatusError as e:
         logger.error("pix图库API出错...", arparma.header_result, session=session, e=e)
         await MessageUtils.build_message(

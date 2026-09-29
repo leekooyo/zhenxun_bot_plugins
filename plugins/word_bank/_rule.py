@@ -1,19 +1,18 @@
 from io import BytesIO
 
 import imagehash
-from PIL import Image
-from nonebot.typing import T_State
 from nonebot.adapters import Bot, Event
-from nonebot_plugin_alconna import UniMsg
+from nonebot.typing import T_State
 from nonebot_plugin_alconna import At as alcAt
-from nonebot_plugin_session import EventSession
 from nonebot_plugin_alconna import Text as alcText
-
+from nonebot_plugin_alconna import UniMsg
+from nonebot_plugin_session import EventSession
+from PIL import Image
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 
-from ._model import WordBank
 from ._data_source import get_img_and_at_list
+from ._model import WordBank
 
 
 async def check(
@@ -47,9 +46,11 @@ async def check(
         elif problem and bot.config.nickname:
             nickname = [nk for nk in bot.config.nickname if str(message).startswith(nk)]
             problem = nickname[0] + problem if nickname else problem
-    if problem and (
-        await WordBank.check_problem(session.id3 or session.id2, problem) is not None
-    ):
+    if not problem:
+        return False
+    match_entry = await WordBank.match_entry(session.id3 or session.id2, problem)
+    if match_entry is not None:
         state["problem"] = problem  # type: ignore
+        state["word_bank_match"] = match_entry  # type: ignore
         return True
     return False

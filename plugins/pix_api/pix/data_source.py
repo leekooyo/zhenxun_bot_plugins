@@ -1,9 +1,11 @@
-from pathlib import Path
 import random
+from pathlib import Path
 
+from httpx import ReadError, ReadTimeout
 from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import TEMP_PATH
 from zhenxun.services.log import logger
+from zhenxun.utils.decorator.retry import Retry
 from zhenxun.utils.http_utils import AsyncHttpx
 
 from .._config import PixModel, PixResult, base_config
@@ -15,8 +17,9 @@ headers = {
 }
 
 
-class PixManage:
+class PixManager:
     @classmethod
+    @Retry.api(exception=(ReadTimeout, ReadError))
     async def get_pix(
         cls,
         tags: tuple[str, ...],
@@ -57,7 +60,9 @@ class PixManage:
         headers = None
         if token := base_config.get("token"):
             headers = {"Authorization": token}
-        res = await AsyncHttpx.post(api, json=json_data, headers=headers)
+        res = await AsyncHttpx.post(
+            api, json=json_data, headers=headers, timeout=base_config.get("timeout")
+        )
         if res.status_code == 502 and retry_count < 3:
             logger.warning("pix api 502错误，请检查pix api是否正常")
             return await cls.get_pix(
@@ -69,6 +74,7 @@ class PixManage:
         return PixResult[list[PixModel]](**res_data)
 
     @classmethod
+    @Retry.api()
     async def get_image(cls, pix: PixModel, is_original: bool = False) -> Path | None:
         """获取图片
 
@@ -93,12 +99,11 @@ class PixManage:
             elif "img-original" in url:
                 url = "img-original" + url.split("img-original")[-1]
             url = f"https://{small_url}/{url}"
-        timeout = base_config.get("timeout")
         file = TEMP_PATH / f"pix_{pix.pid}_{random.randint(1, 1000)}.png"
         return (
             file
             if await AsyncHttpx.download_file(
-                url, file, headers=headers, timeout=timeout
+                url, file, headers=headers, timeout=base_config.get("timeout")
             )
             else None
         )
@@ -149,7 +154,9 @@ class PixManage:
         headers = None
         if token := base_config.get("token"):
             headers = {"Authorization": token}
-        res = await AsyncHttpx.post(api, json=json_data, headers=headers)
+        res = await AsyncHttpx.post(
+            api, json=json_data, headers=headers, timeout=base_config.get("timeout")
+        )
         res.raise_for_status()
         return PixResult(**res.json()).info
 
@@ -170,6 +177,8 @@ class PixManage:
         headers = None
         if token := base_config.get("token"):
             headers = {"Authorization": token}
-        res = await AsyncHttpx.post(api, json=json_data, headers=headers)
+        res = await AsyncHttpx.post(
+            api, json=json_data, headers=headers, timeout=base_config.get("timeout")
+        )
         res.raise_for_status()
         return PixResult(**res.json()).info

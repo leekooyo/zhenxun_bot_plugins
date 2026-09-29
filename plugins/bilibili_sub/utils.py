@@ -1,18 +1,17 @@
+import asyncio
 import datetime
 import traceback
-from io import BytesIO
+from pathlib import Path
 
-import httpx  # type: ignore
-from bilireq.user import get_user_info  # type: ignore
-from nonebot_plugin_htmlrender import get_new_page  # type: ignore
-
+from bilibili_api import Credential as BilibiliCredential
+from bilibili_api import live as bilibili_live_module
+from bilibili_api import user as bilibili_user_module
+from nonebot_plugin_htmlrender import get_new_page
+from zhenxun.configs.path_config import IMAGE_PATH
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
-from zhenxun.utils.image_utils import BuildImage
-from zhenxun.configs.path_config import IMAGE_PATH
 
-from .auth import AuthManager
-from .Wbi import encode_wbi, get_wbi_img
+from .config import AVATAR_CACHE_DIR, BANGUMI_COVER_CACHE_DIR, get_credential
 
 BORDER_PATH = IMAGE_PATH / "border"
 BORDER_PATH.mkdir(parents=True, exist_ok=True)
@@ -20,162 +19,245 @@ BASE_URL = "https://api.bilibili.com"
 
 
 async def get_pic(url: str) -> bytes:
-    """
-    获取图像
-    :param url: 图像链接
-    :return: 图像二进制
-    """
+    """获取图像"""
     return (await AsyncHttpx.get(url, timeout=10)).content
 
 
-async def create_live_des_image(uid: int, title: str, cover: str, tags: str, des: str):
-    """
-    生成主播简介图片
-    :param uid: 主播 uid
-    :param title: 直播间标题
-    :param cover: 直播封面
-    :param tags: 直播标签
-    :param des: 直播简介
-    :return:
-    """
-    user_info = await get_user_info(uid, cookies=AuthManager.get_cookies())
-    user_info["name"]
-    user_info["sex"]
-    face = user_info["face"]
-    user_info["sign"]
-    ava = BuildImage(100, 100, background=BytesIO(await get_pic(face)))
-    ava.circle()
-    cover = BuildImage(470, 265, background=BytesIO(await get_pic(cover)))
+async def get_cached_avatar(uid: int, avatar_url: str) -> Path | None:
+    """获取缓存的用户头像路径，如果不存在则下载"""
+    if not avatar_url or not uid:
+        return None
+    cached_path = AVATAR_CACHE_DIR / f"{uid}.png"
+    if cached_path.exists():
+        logger.debug(f"头像缓存命中: UID {uid}")
+        return cached_path
+
+    logger.debug(f"头像缓存未命中，正在下载: UID {uid}")
+    try:
+        if await AsyncHttpx.download_file(avatar_url, cached_path):
+            return cached_path
+    except Exception as e:
+        logger.error(f"下载头像失败 UID: {uid}, URL: {avatar_url}", e=e)
+    return None
 
 
-def _create_live_des_image(
-    title: str,
-    cover: BuildImage,
-    tags: str,
-    des: str,
-    user_name: str,
-    sex: str,
-    sign: str,
-    ava: BuildImage,
+async def get_cached_bangumi_cover(season_or_ep_id: int, cover_url: str) -> Path | None:
+    """获取缓存的番剧或剧集封面路径，如果不存在则下载"""
+    if not cover_url or not season_or_ep_id:
+        return None
+    cached_path = BANGUMI_COVER_CACHE_DIR / f"{season_or_ep_id}.png"
+    if cached_path.exists():
+        logger.debug(f"番剧封面缓存命中: ID {season_or_ep_id}")
+        return cached_path
+
+    logger.debug(f"番剧封面缓存未命中，正在下载: ID {season_or_ep_id}")
+    try:
+        if await AsyncHttpx.download_file(cover_url, cached_path):
+            return cached_path
+    except Exception as e:
+        logger.error(f"下载番剧封面失败 ID: {season_or_ep_id}, URL: {cover_url}", e=e)
+    return None
+
+
+async def get_videos(uid: int, auth: BilibiliCredential | None = None, **kwargs):
+    """获取用户投搞视频信息"""
+    credential = auth or get_credential()
+    user_instance = bilibili_user_module.User(uid=uid, credential=credential)
+    return await user_instance.get_videos(**kwargs)
+
+
+async def get_user_card(
+    mid: int, photo: bool = False, auth: BilibiliCredential | None = None, **kwargs
 ):
-    """
-    生成主播简介图片
-    :param title: 直播间标题
-    :param cover: 直播封面
-    :param tags: 直播标签
-    :param des: 直播简介
-    :param user_name: 主播名称
-    :param sex: 主播性别
-    :param sign: 主播签名
-    :param ava: 主播头像
-    :return:
-    """
-    border = BORDER_PATH / "0.png"
-    if border.exists():
-        BuildImage(1772, 2657, background=border)
-    bk = BuildImage(1772, 2657, font_size=30)
-    bk.paste(cover, (0, 100), center_type="by_width")
+    """获取用户卡片信息"""
+    credential = auth or get_credential()
+    user_instance = bilibili_user_module.User(uid=mid, credential=credential)
+    user_info = await user_instance.get_user_info()
+    return user_info
 
 
-async def get_meta(media_id: int, auth=None, reqtype="both", **kwargs):
-    """
-    根据番剧 ID 获取番剧元数据信息，
-    作为bilibili_api和bilireq的替代品。
-    如果bilireq.bangumi更新了，可以转为调用bilireq.bangumi的get_meta方法，两者完全一致。
-    """
-    from bilireq.utils import get
-
-    url = f"{BASE_URL}/pgc/review/user"
-    params = {"media_id": media_id}
-    raw_json = await get(
-        url,
-        cookies=AuthManager.get_cookies(),
-        raw=True,
-        params=params,
-        auth=auth,
-        reqtype=reqtype,
-        **kwargs,
-    )
-    return raw_json["result"]
-
-
-async def get_videos(uid: int):
-    """
-    获取用户投该视频信息
-    :param uid: 用户 UID
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Referer": "https://www.bilibili.com",
-    }
-    async with httpx.AsyncClient(
-        cookies=AuthManager.get_cookies(), headers=headers
-    ) as client:
-        space_videos_api = f"{BASE_URL}/x/space/wbi/arc/search"
-        ps = 30
-        pn = 1
-        wbi_img = await get_wbi_img(client)
-        params = {
-            "mid": uid,
-            "ps": ps,
-            "tid": 0,
-            "pn": pn,
-            "order": "pubdate",
-        }
-        params = encode_wbi(params, wbi_img)
-        json_data = (await client.get(space_videos_api, params=params)).json()
-        return json_data
-
-
-async def get_user_card(mid, photo: bool = False, auth=None, reqtype="both", **kwargs):
-    from bilireq.utils import get
-
-    url = f"{BASE_URL}/x/web-interface/card"
-    return (
-        await get(
-            url,
-            cookies=AuthManager.get_cookies(),
-            params={"mid": mid, "photo": photo},
-            auth=auth,
-            reqtype=reqtype,
-            **kwargs,
-        )
-    )["card"]
-
-
-async def get_user_dynamics(uid: int, offset: int = 0, need_top: bool = False):
-    from bilireq.utils import get
-
+async def get_user_dynamics(
+    uid: int,
+    offset: int = 0,
+    need_top: bool = False,
+    auth: BilibiliCredential | None = None,
+    **kwargs,
+):
     """获取指定用户历史动态"""
-    url = "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/space_history"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Referer": "https://www.bilibili.com",
+    credential = auth or get_credential()
+    user_instance = bilibili_user_module.User(uid=uid, credential=credential)
+    offset_str = "" if not offset else str(offset)
+    dynamics = await user_instance.get_dynamics_new(offset=offset_str, **kwargs)
+    if not dynamics.get("items"):
+        await asyncio.sleep(0.5)
+        dynamics = await user_instance.get_dynamics_new(offset=offset_str, **kwargs)
+    return _convert_new_dynamics_to_old_cards(dynamics, need_top=need_top)
+
+
+def _convert_new_dynamics_to_old_cards(dynamics: dict, need_top: bool = False) -> dict:
+    """将新版动态接口 items 转为插件既有的 cards 结构。"""
+    if not isinstance(dynamics, dict):
+        return {"cards": []}
+
+    cards = []
+    for item in dynamics.get("items", []) or []:
+        if not need_top and _is_top_dynamic(item):
+            continue
+        card = _convert_new_dynamic_item(item)
+        if card:
+            cards.append(card)
+
+    return {
+        "cards": cards,
+        "has_more": dynamics.get("has_more", False),
+        "next_offset": dynamics.get("offset", ""),
+        "offset": dynamics.get("offset", ""),
     }
-    params = {
-        "host_uid": uid,
-        "offset_dynamic_id": offset,
-        "need_top": int(bool(need_top)),
+
+
+def _convert_new_dynamic_item(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+
+    modules = item.get("modules") or {}
+    author = modules.get("module_author") or {}
+    dynamic = modules.get("module_dynamic") or {}
+    major = dynamic.get("major") or {}
+    additional = dynamic.get("additional") or {}
+
+    dynamic_id = item.get("id_str") or item.get("id")
+    timestamp = author.get("pub_ts") or 0
+    try:
+        timestamp = int(timestamp)
+    except (TypeError, ValueError):
+        timestamp = 0
+
+    text_parts = []
+    desc = dynamic.get("desc") or {}
+    if isinstance(desc, dict) and desc.get("text"):
+        text_parts.append(desc["text"])
+
+    title, summary_text = _extract_major_text(major)
+    if title:
+        text_parts.append(title)
+    if summary_text:
+        text_parts.append(summary_text)
+
+    images = _extract_major_images(major)
+    item_data = {
+        "description": "\n".join(part for part in text_parts if part),
+        "content": "\n".join(part for part in text_parts if part),
+        "pictures": [{"img_src": url} for url in images],
     }
-    return await get(
-        url, headers=headers, cookies=AuthManager.get_cookies(), params=params
-    )
+    if images:
+        item_data["pic"] = images[0]
+
+    card_data = {
+        "item": item_data,
+        "user": {"description": item_data["description"]},
+        "_new_dynamic": item,
+    }
+    if additional:
+        card_data["additional"] = additional
+        additional_type = additional.get("type") if isinstance(additional, dict) else ""
+        if additional_type and "goods" in str(additional_type).lower():
+            card_data["goods"] = additional
+
+    return {
+        "desc": {
+            "timestamp": timestamp,
+            "dynamic_id": dynamic_id,
+            "type": _map_new_dynamic_type(item.get("type"), major, additional),
+        },
+        "card": card_data,
+        "extend_json": {},
+    }
 
 
-async def get_room_info_by_id(live_id: int, *, auth=None, reqtype="app", **kwargs):
-    from bilireq.utils import get
+def _is_top_dynamic(item: dict) -> bool:
+    modules = item.get("modules") or {}
+    author = modules.get("module_author") or {}
+    tag = modules.get("module_tag") or {}
+    return bool(author.get("is_top") or tag.get("text") == "置顶")
 
+
+def _extract_major_text(major: dict) -> tuple[str, str]:
+    if not isinstance(major, dict):
+        return "", ""
+
+    for key in ("opus", "draw", "article", "archive", "common"):
+        data = major.get(key)
+        if not isinstance(data, dict):
+            continue
+
+        title = data.get("title") or ""
+        summary = data.get("summary") or {}
+        if isinstance(summary, dict):
+            summary_text = summary.get("text") or ""
+        else:
+            summary_text = str(summary) if summary else ""
+
+        desc = data.get("desc") or ""
+        text = summary_text or desc
+        if title or text:
+            return str(title), str(text)
+
+    return "", ""
+
+
+def _extract_major_images(major: dict) -> list[str]:
+    if not isinstance(major, dict):
+        return []
+
+    images = []
+    for key in ("opus", "draw"):
+        data = major.get(key)
+        if not isinstance(data, dict):
+            continue
+
+        pics = data.get("pics") or data.get("items") or []
+        if isinstance(pics, dict):
+            pics = [pics]
+        for pic in pics:
+            if not isinstance(pic, dict):
+                continue
+            url = pic.get("url") or pic.get("src") or pic.get("img_src")
+            if url:
+                images.append(url)
+
+    return images
+
+
+def _map_new_dynamic_type(
+    dynamic_type: str | None, major: dict, additional: dict | None = None
+) -> int:
+    if additional and isinstance(additional, dict):
+        additional_type = str(additional.get("type") or "").lower()
+        if "goods" in additional_type:
+            return 19
+
+    major_type = str((major or {}).get("type") or "").upper()
+    if "ARTICLE" in major_type:
+        return 64
+
+    type_map = {
+        "DYNAMIC_TYPE_DRAW": 2,
+        "DYNAMIC_TYPE_AV": 8,
+        "DYNAMIC_TYPE_FORWARD": 1,
+        "DYNAMIC_TYPE_ARTICLE": 64,
+    }
+    return type_map.get(str(dynamic_type or ""), 0)
+
+
+async def get_room_info_by_id(
+    live_id: int, auth: BilibiliCredential | None = None, **kwargs
+):
     """根据房间号获取指定直播间信息"""
-    url = "https://api.live.bilibili.com/room/v1/Room/get_info"
-    params = {"id": live_id}
-    return await get(
-        url,
-        cookies=AuthManager.get_cookies(),
-        params=params,
-        auth=auth,
-        reqtype=reqtype,
-        **kwargs,
+    credential = auth or get_credential()
+    liveroom_instance = bilibili_live_module.LiveRoom(
+        room_display_id=live_id, credential=credential
     )
+    return await liveroom_instance.get_room_info()
 
 
 async def get_dynamic_screenshot(dynamic_id: int) -> bytes | None:
@@ -186,23 +268,28 @@ async def get_dynamic_screenshot(dynamic_id: int) -> bytes | None:
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             device_scale_factor=3,
         ) as page:
-            cookies = AuthManager.get_cookies()
-            await page.context.add_cookies(
-                [
-                    {
-                        "domain": ".bilibili.com",
-                        "name": name,
-                        "path": "/",
-                        "value": value,
-                    }
-                    for name, value in cookies.items()
-                ]
-            )
+            credential = get_credential()
+            if credential:
+                try:
+                    cookies = credential.get_cookies()
+                    if cookies:
+                        await page.context.add_cookies(
+                            [
+                                {
+                                    "domain": ".bilibili.com",
+                                    "name": name,
+                                    "path": "/",
+                                    "value": value,
+                                }
+                                for name, value in cookies.items()
+                            ]
+                        )
+                except Exception as e:
+                    logger.warning(f"获取 cookies 失败: {e}")
             await page.goto(url, wait_until="networkidle")
-            # 动态被删除或者进审核了
             if page.url == "https://www.bilibili.com/404":
                 logger.warning(f"动态 {dynamic_id} 不存在")
-                return
+                return None
             await page.wait_for_load_state(state="domcontentloaded")
             card = await page.query_selector(".card")
             assert card
@@ -218,29 +305,25 @@ async def get_dynamic_screenshot(dynamic_id: int) -> bytes | None:
         logger.warning(
             f"Error in get_dynamic_screenshot({url}): {traceback.format_exc()}"
         )
+    return None
 
 
 def calc_time_total(t: float):
-    """
-    Calculate the total time in a human-readable format.
-    Args:
-    t (float | int): The time in seconds.
-    Returns:
-    str: The total time in a human-readable format.
-    Example:
-    >>> calc_time_total(4.5)
-    '4500 毫秒'
-    >>> calc_time_total(3600)
-    '1 小时'
-    >>> calc_time_total(3660)
-    '1 小时 1 分钟'
-    """
-    t = int(t * 1000)
-    if t < 5000:
-        return f"{t} 毫秒"
-    timedelta = datetime.timedelta(seconds=t // 1000)
-    day = timedelta.days
-    hour, mint, sec = tuple(int(n) for n in str(timedelta).split(",")[-1].split(":"))
+    """计算人类可读格式的总时间"""
+    if not isinstance(t, (int, float)):
+        try:
+            t = float(t)
+        except (ValueError, TypeError):
+            return "时间格式错误"
+
+    t_int = int(t * 1000)
+    if t_int < 5000:
+        return f"{t_int} 毫秒"
+    timedelta_obj = datetime.timedelta(seconds=t_int // 1000)
+    day = timedelta_obj.days
+    hour, mint, sec = tuple(
+        int(n) for n in str(timedelta_obj).split(",")[-1].split(":")
+    )
     total = ""
     if day:
         total += f"{day} 天 "
@@ -250,4 +333,4 @@ def calc_time_total(t: float):
         total += f"{mint} 分钟 "
     if sec and not day and not hour:
         total += f"{sec} 秒 "
-    return total
+    return total.strip()

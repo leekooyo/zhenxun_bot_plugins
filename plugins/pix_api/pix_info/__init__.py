@@ -1,3 +1,4 @@
+from httpx import HTTPStatusError
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import (
     Alconna,
@@ -8,7 +9,6 @@ from nonebot_plugin_alconna import (
     on_alconna,
 )
 from nonebot_plugin_uninfo import Uninfo
-
 from zhenxun.configs.utils import Command, PluginExtraData
 from zhenxun.services.log import logger
 from zhenxun.utils.depends import CheckConfig
@@ -56,7 +56,16 @@ async def _(
     arparma: Arparma,
     tags: Query[tuple[str, ...]] = Query("tags", ()),
 ):
-    result = await InfoManage.get_pix_gallery(tags.result)
+    try:
+        result = await InfoManage.get_pix_gallery(tags.result)
+    except HTTPStatusError as e:
+        logger.error("pix图库API出错...", arparma.header_result, session=session, e=e)
+        await MessageUtils.build_message(
+            f"pix图库API出错啦！ code: {e.response.status_code}"
+        ).finish()
+    except Exception as e:
+        logger.error("pix图库API出错...", arparma.header_result, session=session, e=e)
+        await MessageUtils.build_message("pix图库API出错啦，请稍后再试...").finish()
     await MessageUtils.build_message(result).send(reply_to=True)
     logger.info(
         f"PIX 查看PIX图库 tags: {tags.result}", arparma.header_result, session=session

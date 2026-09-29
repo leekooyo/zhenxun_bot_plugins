@@ -1,7 +1,6 @@
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Alconna, Arparma, on_alconna
 from nonebot_plugin_session import EventSession
-
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import Command, PluginExtraData, RegisterConfig
 from zhenxun.services.log import logger
@@ -69,7 +68,7 @@ async def get_data(url: str, params: dict | None = None) -> tuple[dict | str, in
         else:
             if data["code"] == 101:
                 return "缺失ALAPI TOKEN，请在配置文件中填写！", 999
-            return f'发生了错误...code：{data["code"]}', 999
+            return f"发生了错误...code：{data['code']}", 999
     except TimeoutError:
         return "超时了....", 998
 

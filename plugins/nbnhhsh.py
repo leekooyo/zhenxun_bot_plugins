@@ -1,8 +1,7 @@
+import ujson as json
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Alconna, Args, Arparma, on_alconna
 from nonebot_plugin_session import EventSession
-import ujson as json
-
 from zhenxun.configs.utils import Command, PluginExtraData
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
@@ -47,21 +46,19 @@ async def _(session: EventSession, arparma: Arparma, text: str):
     )
     try:
         data = response.json()
-        tmp = ""
         result = ""
         for x in data:
             trans = ""
             if x.get("trans"):
-                trans = x["trans"][0]
+                trans = "，".join(x["trans"])
             elif x.get("inputting"):
                 trans = "，".join(x["inputting"])
-            tmp += f'{x["name"]} -> {trans}\n'
-            result += trans
+            result += f"{x['name']} -> {trans}\n"
         logger.info(
             f" 发送能不能好好说话: {text} -> {result}",
             arparma.header_result,
             session=session,
         )
-        await MessageUtils.build_message(f"{tmp}={result}").send(reply_to=True)
+        await MessageUtils.build_message(result).send(reply_to=True)
     except (IndexError, KeyError):
         await MessageUtils.build_message("没有找到对应的翻译....").send()

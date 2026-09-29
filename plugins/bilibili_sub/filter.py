@@ -1,149 +1,199 @@
-import asyncio
-import json
-import os
-from typing import TypedDict
-
-import aiofiles
-from playwright._impl._api_structures import SetCookieParam
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+import re
 
 from zhenxun.services.log import logger
 
-# 配置常量
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-COOKIES_PATH = os.path.join(CURRENT_DIR, "cookies.json")
+from .utils import get_user_dynamics
 
 
-class Cookie(TypedDict):
-    name: str
-    value: str
-    domain: str
-    path: str
-    sameSite: str
-    secure: bool
-    httpOnly: bool
-
-
-# 需要检测的广告相关类名
-AD_CLASS_NAMES = [
-    "opus-text-rich-hl",  # 文字广告
-    "goods-shop",  # 商品店铺
-    "bili-dyn-card-goods",  # B站动态商品卡片
-    "dyn-goods",  # 动态商品
-    "dyn-goods__mark",  # 商品标记
-    "icon--taobao",  # 淘宝商品链接
-]
-
-MAX_ATTEMPTS = 3  # 最大检测重试次数
-
-
-async def load_cookies() -> list[SetCookieParam] | None:
-    """
-    加载并处理cookies配置
-
-    Returns:
-        List[SetCookieParam] | None: 处理后的cookies列表，失败时返回None
-    """
+async def is_ad(uid: int, dynamic_id: str) -> bool:
+    """使用 Bilibili API 检查动态内容是否为广告"""
     try:
-        async with aiofiles.open(COOKIES_PATH) as f:
-            content = await f.read()
-            cookies: list[SetCookieParam] = json.loads(content)
+        logger.info(f"[广告过滤-API] 开始检查动态: UID={uid}, 动态ID={dynamic_id}")
 
-        # 修正cookies的sameSite属性
-        for cookie in cookies:
-            same_site = cookie.get("sameSite") or ""
-            if same_site.lower() == "unspecified":
-                cookie["sameSite"] = "Lax"
+        logger.debug(f"[广告过滤-API] 正在获取用户动态数据: UID={uid}")
+        dynamics_data = await get_user_dynamics(uid)
+        if not dynamics_data or not dynamics_data.get("cards"):
+            logger.warning(
+                f"[广告过滤-API] 未获取到动态数据: UID={uid}, 数据为空或无cards字段"
+            )
+            return False
 
-        return cookies
-    except Exception as e:
-        logger.error(f"加载cookies失败: {e}")
-        return None
+        logger.debug(
+            f"[广告过滤-API] 成功获取动态数据: UID={uid}, 动态数量={len(dynamics_data.get('cards', []))}"
+        )
 
+        logger.debug(f"[广告过滤-API] 正在查找指定动态: UID={uid}, 动态ID={dynamic_id}")
+        target_dynamic = None
+        available_ids = []
+        for card in dynamics_data["cards"]:
+            card_dynamic_id = str(card["desc"]["dynamic_id"])
+            available_ids.append(card_dynamic_id)
+            if card_dynamic_id == str(dynamic_id):
+                target_dynamic = card
+                break
 
-async def setup_browser_context() -> tuple[Browser, BrowserContext]:
-    """
-    设置浏览器环境
+        if not target_dynamic:
+            logger.warning(
+                f"[广告过滤-API] 未找到指定动态: UID={uid}, 动态ID={dynamic_id}, 可用动态ID={available_ids[:5]}..."
+            )
+            return False
 
-    Returns:
-        tuple[Browser, BrowserContext]: 浏览器实例和上下文
-    """
-    playwright = await async_playwright().start()
-    browser = await playwright.chromium.launch(headless=True)
-    context = await browser.new_context()
+        logger.debug(f"[广告过滤-API] 成功找到目标动态: UID={uid}, 动态ID={dynamic_id}")
 
-    if cookies := await load_cookies():
-        await context.add_cookies(cookies)
+        dynamic_type = target_dynamic["desc"].get("type", 0)
+        logger.debug(
+            f"[广告过滤-API] 动态类型检查: UID={uid}, 动态ID={dynamic_id}, 类型={dynamic_type}"
+        )
 
-    return browser, context
+        goods_types = {
+            19: "商品分享",
+            64: "专栏文章（可能包含商品）",
+        }
 
-
-async def check_blocked_elements(page: Page) -> bool:
-    """
-    检查页面是否包含被拦截的广告元素
-
-    Args:
-        page: Playwright页面实例
-
-    Returns:
-        bool: True表示发现广告元素，False表示未发现
-    """
-    for class_name in AD_CLASS_NAMES:
-        if await page.locator(f".{class_name}").count() > 0:
-            logger.info(f"检测到广告元素: {class_name}")
+        if dynamic_type in goods_types:
+            logger.warning(
+                f"[广告过滤-API] 检测到商品类型动态: UID={uid}, 动态ID={dynamic_id}, 类型={dynamic_type}({goods_types[dynamic_type]})"
+            )
             return True
-    return False
 
+        logger.debug(
+            f"[广告过滤-API] 动态类型检查通过: UID={uid}, 动态ID={dynamic_id}, 类型={dynamic_type}"
+        )
 
-async def check_page_elements(url: str) -> bool:
-    """
-    检查页面是否包含广告元素
+        logger.debug(f"[广告过滤-API] 开始检查动态内容: UID={uid}, 动态ID={dynamic_id}")
+        card_data = target_dynamic.get("card", "")
+        if isinstance(card_data, str):
+            import json
 
-    Args:
-        url: 要检查的页面URL
-
-    Returns:
-        bool: True表示包含广告，False表示不包含或检查失败
-    """
-    browser = None
-    try:
-        browser, context = await setup_browser_context()
-        page = await context.new_page()
-
-        for attempt in range(MAX_ATTEMPTS):
             try:
-                # 加载页面并等待网络请求完成
-                await page.goto(url)
-                await page.wait_for_load_state("networkidle")
+                card_json = json.loads(card_data)
+                logger.debug(
+                    f"[广告过滤-API] 成功解析动态卡片JSON: UID={uid}, 动态ID={dynamic_id}"
+                )
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(
+                    f"[广告过滤-API] 动态卡片JSON解析失败: UID={uid}, 动态ID={dynamic_id}, 错误={e}"
+                )
+                card_json = {}
+        else:
+            card_json = card_data
+            logger.debug(
+                f"[广告过滤-API] 动态卡片数据为字典格式: UID={uid}, 动态ID={dynamic_id}"
+            )
 
-                # 检查是否包含广告元素
-                if await check_blocked_elements(page):
-                    return True
+        text_content = ""
+        content_sources = []
 
-            except Exception as e:
-                msg = f"页面检查过程出错 (尝试 {attempt + 1}/{MAX_ATTEMPTS})"
-                logger.error(f"{msg}: {e}")
-                continue
+        if "item" in card_json:
+            item = card_json["item"]
+            if "description" in item:
+                text_content += item["description"]
+                content_sources.append("item.description")
+            if "content" in item:
+                text_content += item["content"]
+                content_sources.append("item.content")
 
+        if "user" in card_json and "description" in card_json["user"]:
+            text_content += card_json["user"]["description"]
+            content_sources.append("user.description")
+
+        logger.debug(
+            f"[广告过滤-API] 提取文本内容: UID={uid}, 动态ID={dynamic_id}, 来源={content_sources}, 长度={len(text_content)}"
+        )
+
+        logger.debug(f"[广告过滤-API] 开始关键词检查: UID={uid}, 动态ID={dynamic_id}")
+        ad_keywords = [
+            "商品",
+            "购买",
+            "链接",
+            "店铺",
+            "优惠",
+            "折扣",
+            "带货",
+            "种草",
+            "好物",
+            "推荐",
+            "下单",
+            "抢购",
+            "限时",
+            "特价",
+            "促销",
+            "¥",
+            "￥",
+            "元",
+            "价格",
+            "原价",
+            "现价",
+            "到手价",
+            "淘宝",
+            "天猫",
+            "京东",
+            "拼多多",
+            "抖音",
+            "小红书",
+            "直播间",
+            "橱窗",
+            "购物车",
+            "加购",
+            "收藏",
+        ]
+
+        text_lower = text_content.lower()
+        found_keywords = []
+        for keyword in ad_keywords:
+            if keyword in text_content or keyword.lower() in text_lower:
+                found_keywords.append(keyword)
+
+        if found_keywords:
+            logger.warning(
+                f"[广告过滤-API] 检测到广告关键词: UID={uid}, 动态ID={dynamic_id}, 关键词={found_keywords}"
+            )
+            return True
+
+        logger.debug(f"[广告过滤-API] 关键词检查通过: UID={uid}, 动态ID={dynamic_id}")
+
+        logger.debug(f"[广告过滤-API] 开始商品卡片检查: UID={uid}, 动态ID={dynamic_id}")
+        goods_fields = []
+        if "goods" in card_json:
+            goods_fields.append("goods")
+        if "mall" in card_json:
+            goods_fields.append("mall")
+
+        if goods_fields:
+            logger.warning(
+                f"[广告过滤-API] 检测到商品卡片: UID={uid}, 动态ID={dynamic_id}, 字段={goods_fields}"
+            )
+            return True
+
+        logger.debug(f"[广告过滤-API] 商品卡片检查通过: UID={uid}, 动态ID={dynamic_id}")
+
+        logger.debug(f"[广告过滤-API] 开始商品链接检查: UID={uid}, 动态ID={dynamic_id}")
+        url_patterns = {
+            r"item\.taobao\.com": "淘宝商品",
+            r"detail\.tmall\.com": "天猫商品",
+            r"item\.jd\.com": "京东商品",
+            r"yangkeduo\.com": "拼多多商品",
+            r"haohuo\.jinritemai\.com": "抖音好货",
+        }
+
+        for pattern, platform in url_patterns.items():
+            if re.search(pattern, text_content, re.IGNORECASE):
+                logger.warning(
+                    f"[广告过滤-API] 检测到商品链接: UID={uid}, 动态ID={dynamic_id}, 平台={platform}, 模式={pattern}"
+                )
+                return True
+
+        logger.debug(f"[广告过滤-API] 商品链接检查通过: UID={uid}, 动态ID={dynamic_id}")
+        logger.info(
+            f"[广告过滤-API] 动态内容检查完成，未发现广告: UID={uid}, 动态ID={dynamic_id}"
+        )
         return False
 
     except Exception as e:
-        logger.error(f"广告检查任务失败: {e}")
+        logger.error(
+            f"[广告过滤-API] API方式检查动态内容失败: UID={uid}, 动态ID={dynamic_id}, 错误类型={type(e).__name__}, 错误={e}"
+        )
+        import traceback
+
+        logger.debug(f"[广告过滤-API] 详细错误信息:\n{traceback.format_exc()}")
         return False
-
-    finally:
-        if browser:
-            await browser.close()
-
-
-async def main():
-    """
-    主函数，用于命令行测试
-    """
-    url = input("请输入要检查的页面URL: ")
-    result = await check_page_elements(url)
-    print(f"页面广告检测结果: {'包含广告' if result else '未发现广告'}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

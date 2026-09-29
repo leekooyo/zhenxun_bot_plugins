@@ -2,7 +2,6 @@ from nonebot import on_message
 from nonebot.plugin import PluginMetadata
 from nonebot.typing import T_State
 from nonebot_plugin_session import EventSession
-
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
@@ -25,7 +24,12 @@ _matcher = on_message(priority=6, block=True, rule=check)
 @_matcher.handle()
 async def _(session: EventSession, state: T_State):
     if problem := state.get("problem"):
-        gid = session.id3 or session.id2
-        if result := await WordBank.get_answer(gid, problem):
+        if match_entry := state.get("word_bank_match"):
+            result = await WordBank.format_entry_answer(match_entry, problem)
             await result.send()
             logger.info(f"触发词条 {problem}", "词条检测", session=session)
+        else:
+            gid = session.id3 or session.id2
+            if result := await WordBank.get_answer(gid, problem):
+                await result.send()
+                logger.info(f"触发词条 {problem}", "词条检测", session=session)

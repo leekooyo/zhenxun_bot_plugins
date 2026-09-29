@@ -4,7 +4,6 @@ from nonebot.permission import SUPERUSER
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Alconna, Args, Arparma, Match, on_alconna
 from nonebot_plugin_uninfo import Uninfo
-
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
@@ -59,7 +58,7 @@ async def _(
         result = await PixSeekManage.start_seek(st, n)  # type: ignore
         end = time.time()
         await MessageUtils.build_message(
-            f"累计耗时: {int(end-start)} 秒\n共保存 {result[0]} 条数据!"
+            f"累计耗时: {int(end - start)} 秒\n共保存 {result[0]} 条数据!"
             f"\n已存在数据: {result[1]} 条!"
         ).send()
         logger.info(f"PIX 添加结果: {result}", arparma.header_result, session=session)

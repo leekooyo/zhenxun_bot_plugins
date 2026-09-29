@@ -1,40 +1,49 @@
 import time
+from typing import TypedDict
 
 import ujson as json
-from pydantic import BaseModel
-
+from pydantic import BaseModel, Field
 from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import DATA_PATH
+from zhenxun.services.log import logger
 
 base_config = Config.get("mute_setting")
 
 
 class GroupData(BaseModel):
-
     count: int
     """次数"""
     time: int
     """检测时长"""
     duration: int
     """禁言时长"""
-    message_data: dict = {}
+    message_data: dict = Field(default_factory=dict)
     """消息存储"""
 
 
-class MuteManage:
+class UserMessageData(TypedDict):
+    time: float
+    count: int
+    message: str
 
+
+class MuteManager:
     file = DATA_PATH / "group_mute_data.json"
 
     def __init__(self) -> None:
         self._group_data: dict[str, GroupData] = {}
         if self.file.exists():
-            _data = json.load(open(self.file))
-            for gid in _data:
-                self._group_data[gid] = GroupData(
-                    count=_data[gid]["count"],
-                    time=_data[gid]["time"],
-                    duration=_data[gid]["duration"],
-                )
+            try:
+                with open(self.file, encoding="utf-8") as f:
+                    _data = json.load(f)
+                for gid, gdata in _data.items():
+                    self._group_data[gid] = GroupData(
+                        count=gdata["count"],
+                        time=gdata["time"],
+                        duration=gdata["duration"],
+                    )
+            except Exception as e:
+                logger.warning(f"加载禁言配置失败，已使用默认配置: {e}", "mute")
 
     def get_group_data(self, group_id: str) -> GroupData:
         """获取群组数据
@@ -51,6 +60,7 @@ class MuteManage:
                 time=base_config.get("MUTE_DEFAULT_TIME", 7) or 7,
                 duration=base_config.get("MUTE_DEFAULT_DURATION", 10) or 10,
             )
+            self.save_data()
         return self._group_data[group_id]
 
     def reset(self, user_id: str, group_id: str):
@@ -66,14 +76,15 @@ class MuteManage:
 
     def save_data(self):
         """保存数据"""
-        data = {}
-        for gid in self._group_data:
-            data[gid] = {
-                "count": self._group_data[gid].count,
-                "time": self._group_data[gid].time,
-                "duration": self._group_data[gid].duration,
+        data = {
+            gid: {
+                "count": gdata.count,
+                "time": gdata.time,
+                "duration": gdata.duration,
             }
-        with open(self.file, "w") as f:
+            for gid, gdata in self._group_data.items()
+        }
+        with open(self.file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
 
     def add_message(self, user_id: str, group_id: str, message: str) -> int:
@@ -87,38 +98,53 @@ class MuteManage:
         返回:
             int: 禁言时长
         """
-        if group_id not in self._group_data:
-            self._group_data[group_id] = GroupData(
-                count=base_config.get("MUTE_DEFAULT_COUNT"),
-                time=base_config.get("MUTE_DEFAULT_TIME"),
-                duration=base_config.get("MUTE_DEFAULT_DURATION"),
-            )
-        group_data = self._group_data[group_id]
+        group_data = self.get_group_data(group_id)
         if group_data.duration == 0:
             return 0
-        message_data = group_data.message_data
-        if not message_data.get(user_id):
+        if not message:
+            return 0
+
+        message_data: dict[str, UserMessageData] = group_data.message_data
+        now = time.time()
+
+        # 清理长时间未活跃的用户缓存，避免内存持续增长
+        stale_threshold = max(group_data.time * 3, 60)
+        stale_users = [
+            uid
+            for uid, data in message_data.items()
+            if now - data["time"] > stale_threshold
+        ]
+        for uid in stale_users:
+            del message_data[uid]
+
+        user_data = message_data.get(user_id)
+
+        if not user_data:
             message_data[user_id] = {
-                "time": time.time(),
+                "time": now,
                 "count": 1,
                 "message": message,
             }
+            return 0
+
+        # 超过检测时间窗口，重置计数
+        if now - user_data["time"] > group_data.time:
+            user_data["time"] = now
+            user_data["count"] = 1
+            user_data["message"] = message
+            return 0
+
+        # 消息内容一致，累加计数
+        if user_data["message"] == message:
+            user_data["count"] += 1
         else:
-            if message.find(message_data[user_id]["message"]) != -1:
-                message_data[user_id]["count"] += 1
-            else:
-                message_data[user_id]["time"] = time.time()
-                message_data[user_id]["count"] = 1
-            message_data[user_id]["message"] = message
-            if time.time() - message_data[user_id]["time"] > group_data.time:
-                message_data[user_id]["time"] = time.time()
-                message_data[user_id]["count"] = 1
-            if (
-                message_data[user_id]["count"] > group_data.count
-                and time.time() - message_data[user_id]["time"] < group_data.time
-            ):
-                return group_data.duration
-        return 0
+            user_data["time"] = now
+            user_data["count"] = 1
+
+        user_data["message"] = message
+
+        # 检测是否触发刷屏
+        return group_data.duration if user_data["count"] > group_data.count else 0
 
 
-mute_manage = MuteManage()
+mute_manager = MuteManager()

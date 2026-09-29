@@ -1,14 +1,11 @@
-from typing_extensions import Self
-
 from tortoise import fields
 from tortoise.expressions import Q
-
+from typing_extensions import Self
 from zhenxun.services.db_context import Model
 from zhenxun.utils.common_utils import SqlUtils
 
 
 class Setu(Model):
-
     id = fields.IntField(pk=True, generated=True, auto_increment=True)
     """自增id"""
     local_id = fields.IntField()

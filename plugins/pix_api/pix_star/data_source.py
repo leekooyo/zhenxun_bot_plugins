@@ -1,10 +1,11 @@
 import asyncio
-from pathlib import Path
 import random
+from pathlib import Path
 
 from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import TEMP_PATH
 from zhenxun.services.log import logger
+from zhenxun.utils.decorator.retry import Retry
 from zhenxun.utils.http_utils import AsyncHttpx
 
 from .._config import PixModel, PixResult, base_config
@@ -37,7 +38,9 @@ class StarManage:
         headers = None
         if token := base_config.get("token"):
             headers = {"Authorization": token}
-        res = await AsyncHttpx.post(api, json=json_data, headers=headers)
+        res = await AsyncHttpx.post(
+            api, json=json_data, headers=headers, timeout=base_config.get("timeout")
+        )
         res.raise_for_status()
         return f"⭐{PixResult(**res.json()).info}"
 
@@ -58,7 +61,9 @@ class StarManage:
         headers = None
         if token := base_config.get("token"):
             headers = {"Authorization": token}
-        res = await AsyncHttpx.get(api, params=json_data, headers=headers)
+        res = await AsyncHttpx.get(
+            api, params=json_data, headers=headers, timeout=base_config.get("timeout")
+        )
         res.raise_for_status()
         data = PixResult(**res.json())
         return ("当前收藏:\n" + "，".join(data.data))[:-1] if data.suc else data.info
@@ -81,7 +86,9 @@ class StarManage:
         headers = None
         if token := base_config.get("token"):
             headers = {"Authorization": token}
-        res = await AsyncHttpx.post(api, json=json_data, headers=headers)
+        res = await AsyncHttpx.post(
+            api, json=json_data, headers=headers, timeout=base_config.get("timeout")
+        )
         res.raise_for_status()
         data: PixResult = PixResult(**res.json())
         if not data.suc:
@@ -92,10 +99,10 @@ class StarManage:
         message_list = []
         for i in range(len(data_list)):
             pix = data_list[i]
-            img = result[i] or "这张图片下载失败了..."
+            img = result[i] or "\n这张图片下载失败了..."
             message_list.append(
                 [
-                    f"rank: {i + 1}\ntitle: {pix.title}",
+                    f"rank: {i + 1}\ntitle: {pix.title}\n",
                     f"pid: {pix.pid}\nuid: {pix.uid}\nstar: {pix.star}",
                     img,
                 ]
@@ -103,6 +110,7 @@ class StarManage:
         return message_list
 
     @classmethod
+    @Retry.api()
     async def get_image(cls, pix: PixModel) -> Path | None:
         """获取图片
 
@@ -120,13 +128,12 @@ class StarManage:
             elif "img-original" in url:
                 url = "img-original" + url.split("img-original")[-1]
             url = f"https://{small_url}/{url}"
-        timeout = base_config.get("timeout")
         file = TEMP_PATH / f"pix_{pix.pid}_{random.randint(1, 1000)}.png"
         try:
             return (
                 file
                 if await AsyncHttpx.download_file(
-                    url, file, headers=headers, timeout=timeout
+                    url, file, headers=headers, timeout=base_config.get("timeout")
                 )
                 else None
             )

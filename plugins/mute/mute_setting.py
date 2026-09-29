@@ -1,15 +1,15 @@
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Alconna, Args, Arparma, Match, Option, on_alconna
-from nonebot_plugin_session import EventSession
-
+from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import PluginExtraData, RegisterConfig
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.rules import ensure_group
+from zhenxun.utils.utils import get_entity_ids
 
-from ._data_source import base_config, mute_manage
+from ._data_source import base_config, mute_manager
 
 __plugin_meta__ = PluginMetadata(
     name="刷屏禁言",
@@ -82,26 +82,32 @@ _setting_matcher = on_alconna(
 
 @_setting_matcher.handle()
 async def _(
-    session: EventSession,
+    session: Uninfo,
     arparma: Arparma,
     time: Match[int],
     count: Match[int],
     duration: Match[int],
 ):
-    group_id = session.id2
-    if not session.id1 or not group_id:
-        return
+    entity_ids = get_entity_ids(session)
     _time = time.result if time.available else None
     _count = count.result if count.available else None
     _duration = duration.result if duration.available else None
-    group_data = mute_manage.get_group_data(group_id)
+    group_data = mute_manager.get_group_data(entity_ids.group_id or "0")
     if _time is None and _count is None and _duration is None:
         await MessageUtils.build_message(
             f"最大次数：{group_data.count} 次\n"
             f"规定时间：{group_data.time} 秒\n"
-            f"禁言时长：{group_data.duration:.2f} 分钟\n"
+            f"禁言时长：{group_data.duration} 分钟\n"
             f"【在规定时间内发送相同消息超过最大次数则禁言\n当禁言时长为0时关闭此功能】"
         ).finish(reply_to=True)
+    if _time is not None and _time <= 0:
+        await MessageUtils.build_message("检测时长必须大于 0 秒").finish(reply_to=True)
+    if _count is not None and _count <= 0:
+        await MessageUtils.build_message("检测次数必须大于 0 次").finish(reply_to=True)
+    if _duration is not None and _duration < 0:
+        await MessageUtils.build_message("禁言时长不能小于 0 分钟").finish(
+            reply_to=True
+        )
     if _time is not None:
         group_data.time = _time
     if _count is not None:
@@ -114,4 +120,4 @@ async def _(
         arparma.header_result,
         session=session,
     )
-    mute_manage.save_data()
+    mute_manager.save_data()

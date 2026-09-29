@@ -85,9 +85,9 @@ class AiMessageManager:
                 return None
         except KeyError:
             return None
-        msg = await self._get_user_repeat_message_result(user_id)
-        if not msg:
-            msg = await self._get_user_same_message_result(user_id)
+        msg = await self._get_user_repeat_message_result(
+            user_id
+        ) or await self._get_user_same_message_result(user_id)
         if msg:
             if "[uname]" in msg:
                 msg = msg.replace("[uname]", nickname)
@@ -116,7 +116,7 @@ class AiMessageManager:
         if cnt > 1:
             if random.random() < 0.5 and cnt > 3:
                 rand = random.randint(60, 300)
-                await BanConsole.ban(user_id, None, 9, rand, None)
+                await BanConsole.ban(user_id, None, 9, None, rand, None)
                 self._data[user_id]["message"].clear()
                 return f"生气了！你好烦，闭嘴！给我老实安静{rand}秒"
             return random.choice(self._same_message).format(cnt)
@@ -142,7 +142,7 @@ class AiMessageManager:
             if cnt > 1:
                 if random.random() < 0.5 and cnt > 3:
                     rand = random.randint(60, 300)
-                    await BanConsole.ban(user_id, None, 9, rand, None)
+                    await BanConsole.ban(user_id, None, 9, None, rand, None)
                     self._data[user_id]["result"].clear()
                     self._data[user_id]["repeat_count"] = 0
                     return f"生气了！你好烦，闭嘴！给我老实安静{rand}秒"

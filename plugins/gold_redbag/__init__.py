@@ -24,7 +24,6 @@ from nonebot_plugin_alconna import (
     on_alconna,
 )
 from nonebot_plugin_apscheduler import scheduler
-from nonebot_plugin_session import EventSession
 from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import (
@@ -58,7 +57,7 @@ __plugin_meta__ = PluginMetadata(
     """.strip(),
     extra=PluginExtraData(
         author="HibiKier",
-        version="0.1-89d294e",
+        version="0.2",
         superuser_help="""
         节日红包 [金额] [红包数] ?[指定主题文字] ? -g [群id] [群id] ...
 
@@ -154,6 +153,7 @@ async def _(
     user: Match[At],
     num: Query[int] = AlconnaQuery("num", 5),
     default_interval: int = GetConfig(config="DEFAULT_INTERVAL"),
+    default_timeout: int = GetConfig(config="DEFAULT_TIMEOUT"),
     user_name: str = UserName(),
 ):
     at_user = user.result.target if user.available else None
@@ -161,6 +161,8 @@ async def _(
     """以频道id为键"""
     if not group_id:
         await MessageUtils.build_message("群组id为空").finish()
+    if user.available:
+        num.result = 1
     group_red_bag = RedBagManager.get_group_data(group_id)
     # 剩余过期时间
     time_remaining = group_red_bag.check_timeout(session.user.id)
@@ -186,6 +188,7 @@ async def _(
         1 if at_user else num.result,
         user_name,
         session.user.id,
+        timeout=default_timeout,
         assigner=at_user,
         platform=platform,
     )
@@ -246,7 +249,7 @@ async def _(
         await send_msg.send(reply_to=True)
         if settlement_list:
             for red_bag in settlement_list:
-                result_image = await red_bag.build_amount_rank(rank_num, platform)
+                result_image = await red_bag.build_amount_rank(session, rank_num)
                 await MessageUtils.build_message(
                     [f"{red_bag.name}已结算\n", result_image]
                 ).send()
@@ -254,44 +257,52 @@ async def _(
 
 @_return_matcher.handle()
 async def _(
-    session: EventSession,
+    session: Uninfo,
     default_interval: int = GetConfig(config="DEFAULT_INTERVAL"),
     rank_num: int = GetConfig(config="RANK_NUM"),
 ):
-    group_id = session.id3 or session.id2
-    user_id = session.id1
+    group_id = session.group.id if session.group else None
+    user_id = session.user.id
     if not user_id:
         await MessageUtils.build_message("用户id为空").finish()
     if not group_id:
         await MessageUtils.build_message("群组id为空").finish()
-    if group_red_bag := RedBagManager.get_group_data(group_id):
-        if user_red_bag := group_red_bag.get_user_red_bag(user_id):
-            now = time.time()
-            if now - user_red_bag.start_time < default_interval:
-                await MessageUtils.build_message(
-                    "你的红包还没有过时, "
-                    f"在 {int(default_interval - now + user_red_bag.start_time)} "
-                    "秒后可以退回..."
-                ).finish(reply_to=True)
-            user_red_bag = group_red_bag.get_user_red_bag(user_id)
-            if user_red_bag and (
-                data := await group_red_bag.settlement(user_id, session.platform)
-            ):
-                if not data[0]:
-                    await MessageUtils.build_message(
-                        "金币红包的金币已经被抢完了..."
-                    ).finish(reply_to=True)
-                image_result = await user_red_bag.build_amount_rank(
-                    rank_num, session.platform
-                )
-                logger.info(f"退回了红包 {data[0]} 金币", "红包退回", session=session)
-                await MessageUtils.build_message(
-                    [
-                        f"已成功退还了 {data[0]} 金币\n",
-                        image_result,
-                    ]
-                ).finish(reply_to=True)
-    await MessageUtils.build_message("目前没有红包可以退回...").finish(reply_to=True)
+
+    group_red_bag = RedBagManager.get_group_data(group_id)
+    user_red_bag = group_red_bag.get_user_red_bag(user_id)
+    if not user_red_bag:
+        await MessageUtils.build_message("目前没有红包可以退回...").finish(
+            reply_to=True
+        )
+
+    now = time.time()
+    if now - user_red_bag.start_time < default_interval:
+        await MessageUtils.build_message(
+            "你的红包还没有过时 "
+            f"在{int(default_interval - now + user_red_bag.start_time)} "
+            "秒后可以退回..."
+        ).finish(reply_to=True)
+
+    return_gold, _ = await group_red_bag.settlement(
+        user_id, PlatformUtils.get_platform(session)
+    )
+    if return_gold is None:
+        await MessageUtils.build_message("目前没有红包可以退回...").finish(
+            reply_to=True
+        )
+    if return_gold == 0:
+        await MessageUtils.build_message("金币红包的金币已经被抢完了...").finish(
+            reply_to=True
+        )
+
+    image_result = await user_red_bag.build_amount_rank(session, rank_num)
+    logger.info(f"退回了红包 {return_gold} 金币", "红包退回", session=session)
+    await MessageUtils.build_message(
+        [
+            f"已成功退还了 {return_gold} 金币\n",
+            image_result,
+        ]
+    ).finish(reply_to=True)
 
 
 @_festive_matcher.handle()
@@ -321,7 +332,7 @@ async def _(
                 group_red_bag.remove_festive_red_bag()
                 if festive_red_bag.uuid:
                     FestiveRedBagManage.remove(festive_red_bag.uuid)
-                rank_image = await festive_red_bag.build_amount_rank(10, platform)
+                rank_image = await festive_red_bag.build_amount_rank(session, 10)
                 with contextlib.suppress(ActionFailed):
                     await MessageUtils.build_message(
                         [
@@ -333,7 +344,7 @@ async def _(
                     ).send(target=target, bot=bot)
             with contextlib.suppress(JobLookupError):
                 scheduler.remove_job(f"{FESTIVE_KEY}_{g}")
-                await RedBagManager.end_red_bag(g, is_festive=True, platform=platform)
+                await RedBagManager.end_red_bag(session, g, is_festive=True)
             await group_red_bag.add_red_bag(
                 f"{BotConfig.self_nickname}的红包",
                 amount,
@@ -348,7 +359,7 @@ async def _(
                 "date",
                 run_date=(datetime.now() + timedelta(hours=24)).replace(microsecond=0),
                 id=f"{FESTIVE_KEY}_{g}",
-                args=[bot, g, session.platform],
+                args=[bot, session, g],
             )
             try:
                 image_result = await RedBagManager.random_red_bag_background(

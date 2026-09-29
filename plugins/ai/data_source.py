@@ -1,10 +1,10 @@
 import os
 import random
 import re
+import time
 
 import ujson as json
-from nonebot_plugin_alconna import UniMessage, UniMsg
-
+from nonebot_plugin_alconna import UniMessage
 from zhenxun.configs.config import BotConfig, Config
 from zhenxun.configs.path_config import DATA_PATH, IMAGE_PATH
 from zhenxun.services.log import logger
@@ -14,17 +14,25 @@ from zhenxun.utils.message import MessageUtils
 from .utils import ai_message_manager
 
 url = "http://openapi.tuling123.com/openapi/api/v2"
-
 check_url = "https://v3.alapi.cn/api/censor/text"
-
 index = 0
 
-anime_data = json.load(open(DATA_PATH / "anime.json", "r", encoding="utf8"))
+
+# 延迟加载 anime.json
+def load_anime_data() -> dict:
+    anime_file = DATA_PATH / "anime.json"
+    if not anime_file.exists():
+        logger.warning(f"anime.json 不存在于 {anime_file}", "ai")
+        return {}
+    try:
+        with anime_file.open("r", encoding="utf8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error("加载 anime.json 时发生错误", e=e)
+        return {}
 
 
-async def get_chat_result(
-    message: UniMsg, user_id: str, nickname: str
-) -> UniMessage | None:
+async def get_chat_result(text: str, user_id: str, nickname: str) -> UniMessage | None:
     """获取 AI 返回值，顺序： 特殊回复 -> 图灵 -> 青云客
 
     参数:
@@ -36,33 +44,37 @@ async def get_chat_result(
     返回
         str: 回答
     """
+
     global index
-    text = message.extract_plain_text()
     ai_message_manager.add_message(user_id, text)
+
     special_rst = await ai_message_manager.get_result(user_id, nickname)
     if special_rst:
         ai_message_manager.add_result(user_id, special_rst)
         return MessageUtils.build_message(special_rst)
+
     if index == 5:
         index = 0
+
     if len(text) < 6 and random.random() < 0.6:
-        keys = anime_data.keys()
-        for key in keys:
-            if text.find(key) != -1:
-                return random.choice(anime_data[key]).replace("你", nickname)
-    rst = await tu_ling(text, "", user_id)
-    if not rst:
-        rst = await xie_ai(text)
+        anime_data = load_anime_data()
+        for key in anime_data.keys():
+            if key in text:
+                return MessageUtils.build_message(
+                    random.choice(anime_data[key]).replace("你", nickname)
+                )
+
+    rst = await tu_ling(text, "", user_id) or await xie_ai(text)
     if not rst:
         return None
+
     if nickname:
-        if len(nickname) < 5:
-            if random.random() < 0.5:
-                nickname = "~".join(nickname) + "~"
-                if random.random() < 0.2:
-                    if nickname.find("大人") == -1:
-                        nickname += "大~人~"
+        if len(nickname) < 5 and random.random() < 0.5:
+            nickname = "~".join(nickname) + "~"
+            if random.random() < 0.2 and "大人" not in nickname:
+                nickname += "大~人~"
         rst = str(rst).replace("小主人", nickname).replace("小朋友", nickname)
+
     ai_message_manager.add_result(user_id, rst)
     for t in Config.get_config("ai", "TEXT_FILTER"):
         rst = rst.replace(t, "*")
@@ -99,7 +111,7 @@ async def tu_ling(text: str, img_url: str, user_id: str) -> str | None:
                         }
                     },
                 },
-                "userInfo": {"apiKey": TL_KEY[index], "userId": str(user_id)},
+                "userInfo": {"apiKey": TL_KEY[index], "userId": user_id},
             }
         elif img_url:
             req = {
@@ -114,25 +126,23 @@ async def tu_ling(text: str, img_url: str, user_id: str) -> str | None:
                         }
                     },
                 },
-                "userInfo": {"apiKey": TL_KEY[index], "userId": str(user_id)},
+                "userInfo": {"apiKey": TL_KEY[index], "userId": user_id},
             }
     except IndexError:
         index = 0
         return None
-    text = ""
+
     response = await AsyncHttpx.post(url, json=req)
     if response.status_code != 200:
         return None
     resp_payload = json.loads(response.text)
-    if int(resp_payload["intent"]["code"]) in [4003]:
+    if int(resp_payload["intent"]["code"]) == 4003:
         return None
-    if resp_payload["results"]:
-        for result in resp_payload["results"]:
-            if result["resultType"] == "text":
-                text = result["values"]["text"]
-                if "请求次数超过" in text:
-                    text = ""
-    return text
+    for result in resp_payload.get("results", []):
+        if result.get("resultType") == "text":
+            text = result["values"]["text"]
+            return "" if "请求次数超过" in text else text
+    return None
 
 
 # 屑 AI
@@ -146,11 +156,13 @@ async def xie_ai(text: str) -> str:
         str: 青云可回复
     """
     res = await AsyncHttpx.get(
-        f"http://api.qingyunke.com/api.php?key=free&appid=0&msg={text}"
+        "http://api.qingyunke.com/api.php",
+        params={"key": "free", "appid": 0, "msg": text, "_": int(time.time())},
+        timeout=10,
     )
     content = ""
     try:
-        data = json.loads(res.text)
+        data = res.json()
         if data["result"] == 0:
             content = data["content"]
             if "菲菲" in content:
@@ -166,10 +178,8 @@ async def xie_ai(text: str) -> str:
             if "淘宝" in content or "taobao.com" in content:
                 return ""
             while True:
-                r = re.search("{face:(.*)}", content)
-                if r:
-                    id_ = r.group(1)
-                    content = content.replace("{" + f"face:{id_}" + "}", "")
+                if r := re.search("{face:(.*?)}", content):
+                    content = content.replace(r[0], "")
                 else:
                     break
         return (
@@ -178,7 +188,7 @@ async def xie_ai(text: str) -> str:
             else await check_text(content)
         )
     except Exception as e:
-        logger.error(f"Ai xie_ai 发生错误", e=e)
+        logger.error("Ai xie_ai 发生错误", e=e)
         return ""
 
 
@@ -233,9 +243,8 @@ async def check_text(text: str) -> str:
     params = {"token": Config.get_config("alapi", "ALAPI_TOKEN"), "text": text}
     try:
         data = (await AsyncHttpx.get(check_url, timeout=2, params=params)).json()
-        if data["code"] == 200:
-            if data["data"]["conclusion_type"] == 2:
-                return ""
+        if data["code"] == 200 and data["data"]["conclusion_type"] == 2:
+            return ""
     except Exception as e:
-        logger.error(f"检测违规文本错误...", e=e)
+        logger.error("检测违规文本错误...", e=e)
     return text

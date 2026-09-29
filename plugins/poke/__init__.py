@@ -1,14 +1,12 @@
-import json
 import os
-import json
 import random
 
+import ujson as json
 from nonebot import on_notice
 from nonebot.adapters.onebot.v11 import Bot, PokeNotifyEvent
 from nonebot.adapters.onebot.v11.message import MessageSegment
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import to_me
-
 from zhenxun.configs.config import BotConfig, Config
 from zhenxun.configs.path_config import IMAGE_PATH, RECORD_PATH
 from zhenxun.configs.utils import PluginExtraData
@@ -230,6 +228,7 @@ IMAGE_MANAGEMENT = IMAGE_PATH / "image_management"
 
 text_data = {}
 
+
 @poke_.handle()
 async def _(bot: Bot, event: PokeNotifyEvent):
     if event.self_id != event.target_id:
@@ -240,7 +239,7 @@ async def _(bot: Bot, event: PokeNotifyEvent):
     if _clmt.check(event.user_id) or random.random() < 0.3:
         rst = ""
         if random.random() < 0.15:
-            await BanConsole.ban(uid, gid, 1, 60)
+            await BanConsole.ban(uid, gid, 1, "戳一戳封禁", 60)
             rst = "气死我了！"
         await poke_.finish(rst + random.choice(REPLY_MESSAGE), at_sender=True)
     rand = random.random()

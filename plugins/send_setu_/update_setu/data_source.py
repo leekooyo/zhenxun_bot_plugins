@@ -1,15 +1,13 @@
-from datetime import datetime
 import os
 import shutil
-from pathlib import Path
+from datetime import datetime
 
 import aiofiles
-from asyncpg.exceptions import UniqueViolationError
 import nonebot
+import ujson as json
+from asyncpg.exceptions import UniqueViolationError
 from nonebot.drivers import Driver
 from PIL import UnidentifiedImageError
-import ujson as json
-
 from zhenxun.configs.path_config import IMAGE_PATH, TEMP_PATH, TEXT_PATH
 from zhenxun.services.log import logger
 from zhenxun.utils._build_image import BuildImage
@@ -68,13 +66,13 @@ async def update_old_setu_data():
                         else:
                             index += 1
                         logger.info(
-                            f'添加旧色图数据成功 PID：{data[x]["pid"]} index：{idx}....'
+                            f"添加旧色图数据成功 PID：{data[x]['pid']} index：{idx}...."
                         )
                     except UniqueViolationError:
                         fail_count += 1
                         logger.info(
                             "添加旧色图数据失败，"
-                            f'色图重复 PID：{data[x]["pid"]} index：{idx}...'
+                            f"色图重复 PID：{data[x]['pid']} index：{idx}..."
                         )
                 file.unlink()
         setu_url_path = path / "setu_url.json"
@@ -121,100 +119,71 @@ async def update_setu_img(flag: bool = False) -> str | None:
         local_image = path / f"{image.local_id}.jpg"
         path.mkdir(exist_ok=True, parents=True)
         TEMP_PATH.mkdir(exist_ok=True, parents=True)
-        
-        async def process_image(image, path: Path, local_image: Path) -> bool:
-            """处理单个图片，返回是否成功"""
-            if local_image.exists() and image.img_hash:
-                logger.info(f"更新色图 {image.local_id}.jpg 已存在")
-                return False
-            
+        if not local_image.exists() or not image.img_hash:
             temp_file = TEMP_PATH / f"{image.local_id}.jpg"
             if temp_file.exists():
                 temp_file.unlink()
-            
             url_ = change_pixiv_image_links(image.img_url)
             try:
-                if not await AsyncHttpx.download_file(url_, temp_file):
-                    return False
-                
-                # 处理图片大小
-                img = BuildImage.open(temp_file)
-                if os.path.getsize(temp_file) > 1024 * 1024 * 1.5:
-                    await img.resize(0.9)
-                
-                # 统一使用 save_image 处理所有图片保存
-                if not await save_image(img, local_image):
-                    return False
-                
+                if not await AsyncHttpx.download_file(
+                    url_, TEMP_PATH / f"{image.local_id}.jpg"
+                ):
+                    continue
+                _success += 1
+                try:
+                    if (
+                        os.path.getsize(
+                            TEMP_PATH / f"{image.local_id}.jpg",
+                        )
+                        > 1024 * 1024 * 1.5
+                    ):
+                        img = BuildImage.open(TEMP_PATH / f"{image.local_id}.jpg")
+                        await img.resize(0.9)
+                        await img.save(path / f"{image.local_id}.jpg")
+                    else:
+                        logger.info(
+                            f"不需要压缩，移动图片{TEMP_PATH}/{image.local_id}.jpg "
+                            f"--> /{path}/{image.local_id}.jpg"
+                        )
+                        os.rename(
+                            TEMP_PATH / f"{image.local_id}.jpg",
+                            path / f"{image.local_id}.jpg",
+                        )
+                except FileNotFoundError:
+                    logger.warning(f"文件 {image.local_id}.jpg 不存在，跳过...")
+                    continue
+                # img_hash = str(get_img_hash(f"{path}/{image.local_id}.jpg"))
                 image.img_hash = ""
                 await image.save(update_fields=["img_hash"])
-                return True
-            
+                # await Setu.update_setu_data(image.pid, img_hash=img_hash)
             except UnidentifiedImageError:
-                if local_image.exists():
-                    async with aiofiles.open(local_image) as f:
-                        if "404 Not Found" in await f.read():
-                            local_image.unlink()
-                            max_num = await Setu.delete_image(image.pid, image.img_url)
-                            if (path / f"{max_num}.jpg").exists():
-                                os.rename(path / f"{max_num}.jpg", local_image)
-                                logger.warning(f"更新色图 PID：{image.pid} 404，已删除并替换")
-                return False
-            
-            except OSError as e:
-                if "cannot write mode RGBA as JPEG" in str(e):
-                    logger.warning(f"检测到RGBA格式图片 {image.local_id}.jpg，尝试转换...")
-                    try:
-                        img = BuildImage.open(temp_file)
-                        if await save_image(img, local_image):
-                            return True
-                    except Exception as convert_error:
-                        logger.error(f"转换RGBA图片失败: {convert_error}")
-                else:
-                    logger.error(f"更新色图 {image.local_id}.jpg 错误 OSError: {e}")
-                    if type(e) not in error_type:
-                        error_type.append(type(e))
-                        error_info.append(f"更新色图 {image.local_id}.jpg 错误 OSError: {e}")
-                return False
-            
+                # 图片已删除
+                unlink = False
+                async with aiofiles.open(local_image) as f:
+                    if "404 Not Found" in await f.read():
+                        unlink = True
+                if unlink:
+                    local_image.unlink()
+                    max_num = await Setu.delete_image(image.pid, image.img_url)
+                    if (path / f"{max_num}.jpg").exists():
+                        os.rename(path / f"{max_num}.jpg", local_image)
+                        logger.warning(f"更新色图 PID：{image.pid} 404，已删除并替换")
             except Exception as e:
+                _success -= 1
                 logger.error(f"更新色图 {image.local_id}.jpg 错误 {type(e)}: {e}")
                 if type(e) not in error_type:
                     error_type.append(type(e))
-                    error_info.append(f"更新色图 {image.local_id}.jpg 错误 {type(e)}: {e}")
-                return False
-
-        if await process_image(image, path, local_image):
-            _success += 1
-
+                    error_info.append(
+                        f"更新色图 {image.local_id}.jpg 错误 {type(e)}: {e}"
+                    )
+        else:
+            logger.info(f"更新色图 {image.local_id}.jpg 已存在")
     if _success or error_info or flag:
         text = (
-            f'{str(datetime.now()).split(".")[0]} 更新 色图 完成，本地存在 {count} 张，'
+            f"{str(datetime.now()).split('.')[0]} 更新 色图 完成，本地存在 {count} 张，"
         )
         return f"{text}实际更新 {_success} 张，以下为更新时未知错误：\n" + "\n".join(
             error_info
         )
 
     return None
-
-async def save_image(img: BuildImage, save_path: Path) -> bool:
-    """保存图片，处理RGBA格式"""
-    try:
-        if img.markImg.mode == 'RGBA':
-            # 创建白色背景
-            background = BuildImage(
-                width=img.width,
-                height=img.height,
-                color='white',
-                mode='RGB'
-            )
-            # BuildImage.paste() 会自动处理 RGBA 的 alpha 通道
-            # 不需要显式传递 mask 参数
-            await background.paste(img, (0, 0))
-            await background.save(save_path)
-        else:
-            await img.save(save_path)
-        return True
-    except Exception as e:
-        logger.error(f"保存图片失败 {save_path.name}: {type(e)}: {e}")
-        return False

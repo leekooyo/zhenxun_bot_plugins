@@ -1,12 +1,10 @@
 from tortoise import fields
-
 from zhenxun.services.db_context import Model
 
 from ._config import ImageHandleType
 
 
 class ImageManagementLog(Model):
-
     id = fields.IntField(pk=True, generated=True, auto_increment=True)
     """自增id"""
     user_id = fields.CharField(255, description="用户id")
@@ -22,6 +20,6 @@ class ImageManagementLog(Model):
     platform = fields.CharField(255, null=True, description="平台")
     """平台"""
 
-    class Meta:
+    class Meta:  # pyright: ignore[reportIncompatibleVariableOverride]
         table = "image_management_log"
         table_description = "画廊操作记录"
